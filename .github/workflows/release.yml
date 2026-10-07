@@ -86,18 +86,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ steps.version.outputs.target_sha }}
         run: |
-          conclusion="$(
-            gh run list \
-              --repo "$GITHUB_REPOSITORY" \
-              --workflow ci.yml \
-              --commit "$TARGET_SHA" \
-              --event push \
-              --limit 1 \
-              --json conclusion \
-              --jq '.[0].conclusion // ""'
-          )"
-          if [[ "$conclusion" != "success" ]]; then
-            echo "error: CI for $TARGET_SHA did not succeed (conclusion: ${conclusion:-missing})" >&2
+          passed=false
+          for event in push workflow_dispatch; do
+            conclusion="$(
+              gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow ci.yml \
+                --commit "$TARGET_SHA" \
+                --event "$event" \
+                --limit 1 \
+                --json conclusion \
+                --jq '.[0].conclusion // ""'
+            )"
+            if [[ "$conclusion" == "success" ]]; then
+              passed=true
+              break
+            fi
+          done
+          if [[ "$passed" != "true" ]]; then
+            echo "error: CI for $TARGET_SHA did not succeed on push or workflow_dispatch" >&2
             exit 1
           fi
 
