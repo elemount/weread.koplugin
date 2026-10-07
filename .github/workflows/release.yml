@@ -2,6 +2,9 @@ name: Release
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
   workflow_run:
     workflows:
       - KOReader integration
@@ -21,7 +24,7 @@ concurrency:
 jobs:
   package-and-release:
     name: Package plugin
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -55,6 +58,16 @@ jobs:
           if [[ "$EVENT_NAME" == "workflow_run" ]]; then
             if git rev-parse --verify --quiet "refs/tags/$tag"; then
               should_publish=false
+            fi
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            if [[ "$TARGET_REF" != "refs/tags/$tag" ]]; then
+              echo "error: pushed tag does not match _meta.lua version $tag" >&2
+              exit 1
+            fi
+            git fetch origin main --quiet
+            if ! git merge-base --is-ancestor "$TARGET_SHA" origin/main; then
+              echo "error: release tag must point to a commit on main" >&2
+              exit 1
             fi
           else
             if [[ "$TARGET_REF" != "refs/heads/main" ]]; then
@@ -166,11 +179,19 @@ jobs:
       - name: Ensure release tag is new
         if: steps.version.outputs.should_publish == 'true'
         env:
+          EVENT_NAME: ${{ github.event_name }}
           TAG: ${{ steps.version.outputs.tag }}
+          TARGET_SHA: ${{ steps.version.outputs.target_sha }}
         run: |
-          if git rev-parse --verify --quiet "refs/tags/$TAG"; then
-            echo "error: tag $TAG already exists; bump _meta.lua to a new version" >&2
-            exit 1
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            tag_sha="$(git rev-parse "$TAG^{}")"
+            if [[ "$tag_sha" != "$TARGET_SHA" ]]; then
+              echo "error: release tag does not point to the checked commit" >&2
+              exit 1
+            fi
+          elif git rev-parse --verify --quiet "refs/tags/$TAG"; then
+              echo "error: tag $TAG already exists; bump _meta.lua to a new version" >&2
+              exit 1
           fi
 
       - name: Build release notes preface
