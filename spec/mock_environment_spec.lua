@@ -5,7 +5,8 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 local stores = {
     ["/settings/weread.lua"] = {
         auth_schema_version = 1, api_key = "production-sentinel",
-        cookies = { wr_skey = "production-sentinel" },
+        cookies = { wr_vid = "123456", wr_skey = "production-sentinel" },
+        account = { name = "Production", user_vid = "123456", login_method = "qr" },
         books = { real_book = { cache_dir = "/real/downloads/book" } },
         download_dir = "/real/downloads",
         shelf = { view_mode = "cover" },
@@ -70,18 +71,20 @@ local mock = Settings:new()
 assert(mock.mock_endpoint == "http://192.168.31.111:8765")
 assert(mock.data_dir == "/data/weread-mock" and mock.cache_dir == "/data/weread-mock/cache")
 assert(mock.settings_file == "/settings/weread-mock.lua" and mock.collection_name == "weread-mock")
-assert(mock:get("api_key") == "mock-api-key" and mock:get("account").login_method == "mock")
+assert(mock:get("auth").vid == "900000"
+    and mock:get("auth").access_token == "mock-only"
+    and mock:get("account").login_method == "mock")
 assert(next(mock:get("books")) == nil and mock:get("shelf").view_mode == "list")
 assert(mock:set_download_dir("/real/downloads") == "/data/weread-mock/cache")
 mock:set("shelf", { view_mode = "mock-only" })
 config.host, config.port, config.enabled = "192.168.31.112", 8766, false
 assert(Environment.save(config))
 assert(Settings:new().mock_endpoint == "http://192.168.31.111:8765", "active endpoint changed")
-assert(production:get("api_key") == "production-sentinel")
+assert(production:get("api_key") == nil)
 assert(production:get("books").real_book.cache_dir == "/real/downloads/book")
 package.loaded["weread.lib.mock_environment"] = nil
 local restored = Settings:new()
 assert(not restored.mock_endpoint and restored:get("shelf").view_mode == "cover")
-assert(restored:get("cookies").wr_skey == "production-sentinel")
+assert(restored:get("auth").access_token == "production-sentinel")
 assert(restored.data_dir == "/data/weread" and restored.collection_name == "weread")
 print("mock_environment_spec: validation, restart-only switching, data/auth/cache/collection isolation passed")

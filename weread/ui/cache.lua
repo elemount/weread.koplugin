@@ -6,7 +6,6 @@ local logger = require("weread.lib.logger")
 local PathChooser = require("ui/widget/pathchooser")
 local Scan = require("weread.lib.scan")
 local UIManager = require("ui/uimanager")
-local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
@@ -17,19 +16,6 @@ local file_exists = PluginUtil.file_exists
 
 local M = {}
 
-function M:setMPImageDownload(enabled)
-    local cache = self.settings:get("cache")
-    cache.download_mp_images = enabled == true
-    self.settings:set("cache", cache)
-    self.settings:flush()
-    logger.info(
-        "image download setting changed:",
-        "target=mp",
-        "enabled=", tostring(cache.download_mp_images)
-    )
-end
-
--- Returns true if the directory is usable (creatable and writable), else false + message.
 function M:validateDownloadDir(path)
     local lfs = require("libs/libkoreader-lfs")
     if type(path) ~= "string" or path == "" then
@@ -428,7 +414,6 @@ function M:showCacheManagement()
     local entries = {}
     local seen_dirs = {}
     local total_size = 0
-    local mp_total_size = 0
 
     local function directory_stats(path)
         local size = 0
@@ -463,17 +448,12 @@ function M:showCacheManagement()
         if file_count == 0 then
             return
         end
-        local is_mp = WeRead.is_mp_book(book_id)
         total_size = total_size + size
-        if is_mp then
-            mp_total_size = mp_total_size + size
-        end
         table.insert(entries, {
             book_id = book_id,
             title = title or book_id,
             size = size,
             file_count = file_count,
-            is_mp = is_mp,
         })
     end
 
@@ -485,37 +465,18 @@ function M:showCacheManagement()
     end
 
     table.sort(entries, function(a, b)
-        if a.is_mp ~= b.is_mp then
-            return a.is_mp
-        end
         return tostring(a.title):lower() < tostring(b.title):lower()
     end)
 
     local total_str = total_size < 1024 * 1024
         and string.format("%.0f KB", total_size / 1024)
         or string.format("%.1f MB", total_size / 1024 / 1024)
-    local mp_total_str = mp_total_size < 1024 * 1024
-        and string.format("%.0f KB", mp_total_size / 1024)
-        or string.format("%.1f MB", mp_total_size / 1024 / 1024)
-    table.insert(items, {
-        text = T(_("[Cleanup] Clear all public account cache (%1)"), mp_total_str),
-        callback = self:safeCallback(_("Clear all public account cache"), function()
-            UIManager:show(ConfirmBox:new{
-                text = _("Clear all public account cache? Downloaded articles and cached article lists will be deleted."),
-                ok_text = _("Clear"),
-                ok_callback = function()
-                    self:clearAllMPCache()
-                    self:refreshCacheManagement(_("Public account cache cleared"))
-                end,
-            })
-        end),
-    })
     table.insert(items, {
         text = T(_("[Cleanup] Clear all cache (%1)"), total_str),
         separator = true,
         callback = self:safeCallback(_("Clear all cache"), function()
             UIManager:show(ConfirmBox:new{
-                text = _("Clear all cache? Downloaded books and articles, underlines, thoughts, and matching progress will be deleted."),
+                text = _("Clear all cache? Downloaded books, underlines, thoughts, and matching progress will be deleted."),
                 ok_text = _("Clear"),
                 ok_callback = function()
                     self:clearAllCache()
@@ -532,7 +493,6 @@ function M:showCacheManagement()
         table.insert(items, {
             text = entry.title,
             post_text = T(_("%1 files, %2"), tostring(entry.file_count), size_str),
-            mandatory = entry.is_mp and _("Public Account") or "",
             callback = self:safeCallback(entry.title, function()
                 self:confirmClearBookCache(entry.book_id, entry.title)
             end),
@@ -565,7 +525,6 @@ function M:scanLocalCache(root, allowed, dry_run)
         fs = lfs,
         books = books,
         allowed = allowed,
-        is_mp = WeRead.is_mp_book,
         dry_run = dry_run,
         now = os.time(),
     })
@@ -598,8 +557,8 @@ function M:fetchShelfAllowedMap()
 end
 
 function M:confirmScanLocalCache()
-    if not self.settings:is_api_configured() then
-        self:showInfo(_("Scanning requires the official API key to match folders against your WeRead shelf."))
+    if not self.settings:is_authenticated() then
+        self:showInfo(_("Scanning requires WeRead login to match folders against your shelf."))
         return
     end
     self:runOnlineTask(_("Scan and match local books"), function()
@@ -624,11 +583,11 @@ end
 -- already sitting in the new directory (e.g. manually copied in), as well as
 -- known books whose stored paths became stale and need rebinding to the files
 -- found here. base_message is shown when there is nothing to import or the user
--- skips. Importing requires matching against the shelf, so without an API key
+-- skips. Importing requires matching against the shelf, so without a login
 -- or network the scan is silently skipped; it can be run later from Cache
 -- management.
 function M:offerScanNewDir(new_dir, base_message)
-    if not self.settings:is_api_configured() or not self:isNetworkOnline() then
+    if not self.settings:is_authenticated() or not self:isNetworkOnline() then
         self:showInfo(base_message)
         return
     end
@@ -756,38 +715,6 @@ function M:clearBookCache(book_id)
             ReadCollection:removeItem(path_to_remove, name)
         end)
     end
-    self:refreshShelfCacheIndicators()
-end
-
-function M:clearAllMPCache()
-    -- Delete each MP book's real directory (which may sit under an old download
-    -- root) rather than scanning only the current cache_dir, and only touch
-    -- plugin-owned entries tracked in the books table.
-    local books = self.settings:get("books", {})
-    pcall(function()
-        local ReadCollection = require("readcollection")
-        local name = self.settings.collection_name or "weread"
-        if not ReadCollection.coll then
-            ReadCollection:_read()
-        end
-        for book_id, book in pairs(books) do
-            if WeRead.is_mp_book(book_id) and book then
-                local path = book.cached_full_book or book.cached_file
-                if path then
-                    ReadCollection:removeItem(path, name, true)
-                end
-            end
-        end
-        ReadCollection:write({ [name] = true })
-    end)
-    for book_id, book in pairs(books) do
-        if WeRead.is_mp_book(book_id) then
-            os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
-            books[book_id] = nil
-        end
-    end
-    self.settings:set("books", books)
-    self.settings:flush()
     self:refreshShelfCacheIndicators()
 end
 

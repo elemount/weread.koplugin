@@ -319,9 +319,7 @@ local function build_center_cropped_cover(path, width, height)
     return nil
 end
 
--- Public-account covers are typically square profile images. Keep their
--- proportions and center them on white instead of cropping a portrait card
--- tightly around an avatar.
+-- Keep contained artwork at its source proportions with a white background.
 local function build_center_contained_cover(path, width, height, inset)
     local ok, contained = pcall(function()
         local RenderImage = require("ui/renderimage")
@@ -661,9 +659,7 @@ end
 local LibraryView = FocusManager:extend{
     mode = "books",
     title = nil,
-    wp_enable = true,
     books = nil,
-    accounts = nil,
     keyword = nil,
     sort_label = nil,
     filter_label = nil,
@@ -673,7 +669,6 @@ local LibraryView = FocusManager:extend{
     on_select_group = nil,
     on_display_change = nil,
     scroll_offset = nil,
-    on_switch = nil,
     on_search = nil,
     on_refresh = nil,
     on_sort = nil,
@@ -698,8 +693,7 @@ end
 
 function LibraryView:headerBar()
     local size = Screen:scaleBySize(HEADER_SIZE)
-    local title = self.mode == "public_account" and _("Public Accounts")
-        or T(_("Books · %1"), self.group_label or _("All"))
+    local title = T(_("Books · %1"), self.group_label or _("All"))
     local function button(text, icon, width, callback, align, icon_file, max_width)
         local widget = Button:new{
             text = text, icon = icon, width = width, max_width = max_width, height = size,
@@ -747,98 +741,70 @@ function LibraryView:getScrollOffset()
     return self.scroll and self.scroll:getScrolledOffset()
 end
 
-function LibraryView:showSourceMenu(menu_mode)
+function LibraryView:showSourceMenu()
     local Menu = require("ui/widget/menu")
-    menu_mode = menu_mode or self.mode
     local width = math.floor(self.screen_w * 0.9)
     local dialog
-    local function select(callback)
+    local function select_group(key)
         return after_tap(function()
             UIManager:close(dialog)
-            callback()
+            if self.on_select_group then self.on_select_group(key) end
         end)
     end
-    local tab_width = math.floor((width - 2 * Size.border.window) / 2)
-    local tabs = {}
-    for _, tab in ipairs({
-        { mode = "books", text = _("Books") },
-        { mode = "public_account", text = _("Public Accounts") },
-    }) do
-        tabs[#tabs + 1] = Button:new{
-            text = tab.text, width = tab_width, height = Screen:scaleBySize(HEADER_SIZE),
-            text_font_size = 24,
-            padding = 0, radius = 0, margin = 0, bordersize = 0,
-            checked_func = function() return menu_mode == tab.mode end,
-            enabled = tab.mode == "books" or self.wp_enable,
-            callback = select(function()
-                if tab.mode == "books" then
-                    self:showSourceMenu("books")
-                elseif self.on_switch then
-                    self.on_switch(tab.mode)
-                end
-            end),
-        }
-    end
-    -- Menu owns pagination, truncation, dismiss gestures and keyboard focus.
-    local header = HorizontalGroup:new{ tabs[1], tabs[2] }
-    header.getHeight = function(widget) return widget:getSize().h end
-    header.generateVerticalLayout = function() return { { tabs[1] }, { tabs[2] } } end
-    local items = {}
-    local function add_group(key, label, count)
+    local items = {{
+        text = _("All books"),
+        mandatory = tostring(self.total_books or #(self.books or {})),
+        callback = select_group(nil),
+    }}
+    for _, group in ipairs(self.groups or {}) do
         items[#items + 1] = {
-            text = label,
-            mandatory = (self.mode == "books" and self.group_key == key and "✓  " or "")
-                .. tostring(count),
-            callback = select(function()
-                if self.on_select_group then self.on_select_group(key) end
-            end),
+            text = group.label,
+            mandatory = tostring(#group.books),
+            callback = select_group(group.key),
         }
     end
-    if menu_mode == "books" then
-        add_group(nil, _("All books"), self.total_books or #(self.books or {}))
-        for _, group in ipairs(self.groups or {}) do
-            add_group(group.key, group.label, #group.books)
-        end
-    else
-        items[1] = {
-            text = _("Public Accounts"), mandatory = tostring(#(self.accounts or {})),
-            callback = select(function() if self.on_switch then self.on_switch("public_account") end end),
-        }
-    end
+    -- Reuse the shelf's location button as the picker title so its geometry
+    -- stays consistent with the compact bookshelf header.
+    local header = VerticalGroup:new{ align = "left", self._header_buttons[2] }
+    header.getHeight = function(widget) return widget:getSize().h end
+    header.generateVerticalLayout = function(widget) return { { widget[1] } } end
     local header_height = header:getSize().h
     local row_height = Screen:scaleBySize(54)
-    local available_height = self.screen_h - header_height - 2 * Size.border.window
+    local border = 2 * Size.border.window
+    local available_height = self.screen_h - header_height - border
     local paged = #items * row_height > available_height
-    local per_page = paged and math.max(1, math.floor((available_height - Screen:scaleBySize(HEADER_SIZE)) / row_height))
+    local per_page = paged
+        and math.max(1, math.floor((available_height - Screen:scaleBySize(HEADER_SIZE)) / row_height))
         or #items
     dialog = Menu:new{
-        title = _("Select content"), custom_title_bar = header,
+        title = _("Select group"),
+        custom_title_bar = header,
         width = width,
-        height = header_height + per_page * row_height + 2 * Size.border.window
+        height = header_height + per_page * row_height + border
             + (paged and Screen:scaleBySize(HEADER_SIZE) or 0),
-        item_table = items, items_per_page = per_page, items_font_size = 22,
+        item_table = items,
+        items_per_page = per_page,
+        items_font_size = 22,
         _recalculateDimen = function(menu, ...)
             Menu._recalculateDimen(menu, ...)
             if not paged then
-                -- Native Menu reserves a footer even for one page.
+                -- Native Menu reserves a footer on one-page lists; use that
+                -- space for rows and suppress its invisible footer controls.
                 menu.available_height = menu.inner_dimen.h - header_height
                 menu.item_dimen.h = math.floor(menu.available_height / per_page)
             end
         end,
-        -- Unlike the standard title bar, these buttons have no Sym/Menu key
-        -- shortcuts. Keep them reachable with the five-way controller, too.
         mergeTitleBarIntoLayout = function(menu)
-            table.insert(menu.layout, 1, { tabs[2] })
-            table.insert(menu.layout, 1, { tabs[1] })
-            menu.selected.y = menu.selected.y + 2
+            table.insert(menu.layout, 1, { header[1] })
+            menu.selected.y = menu.selected.y + 1
         end,
     }
     if not paged then
-        -- Keep ownership for cleanup, but no invisible controls over the last row.
         dialog.page_info.paintTo = function() end
         dialog.page_info.handleEvent = function() return false end
+    else
+        dialog.page_info.handleEvent = nil
     end
-    -- Keep popout dismissal, but use square corners like the bookshelf.
     dialog[1].radius = 0
     UIManager:show(dialog)
 end
@@ -883,7 +849,6 @@ function LibraryView:showOptions()
 end
 
 function LibraryView:itemStatus(book)
-    if self.mode == "public_account" then return book.author or "" end
     local status = ""
     if book.readUpdateTime and book.readUpdateTime > 0 then
         status = os.date("%Y-%m-%d", book.readUpdateTime)
@@ -897,8 +862,7 @@ function LibraryView:itemStatus(book)
 end
 
 function LibraryView:preparePagination()
-    local source = self.mode == "public_account"
-        and (self.accounts or {}) or (self.books or {})
+    local source = self.books or {}
     self.page_size = math.max(1, math.floor(tonumber(self.page_size) or 10))
     if self.cover_mode then
         local columns = math.max(1, math.floor(tonumber(self.cover_columns) or 3))
@@ -915,8 +879,7 @@ function LibraryView:preparePagination()
 end
 
 function LibraryView:content()
-    local source = self.mode == "public_account"
-        and (self.accounts or {}) or (self.books or {})
+    local source = self.books or {}
     local content = VerticalGroup:new{
         align = "left",
         HorizontalSpan:new{ width = self.list_width },
@@ -968,7 +931,6 @@ function LibraryView:content()
                 cached = book._cached == true,
                 cover_path = self.cover_paths and self.cover_paths[book] or nil,
                 cover_loading = self.cover_loading and self.cover_loading[book] == true,
-                contain_cover = self.mode == "public_account",
                 width = width,
                 height = math.max(1, height),
                 show_parent = self,
@@ -986,7 +948,7 @@ function LibraryView:content()
                 text = book.title or book.bookId or book.book_id or _("Untitled"),
                 status = self:itemStatus(book),
                 width = self.list_width,
-                font_size = self.mode == "books" and 20 or 22,
+                font_size = 20,
                 show_parent = self,
                 callback = function()
                     if self.on_select then self.on_select(book, self.mode) end
@@ -1141,7 +1103,7 @@ end
 local M = {}
 
 -- Measure before fetching covers, so the worker and the visible grid agree.
-function M.getLayout(cover_mode, count, mode)
+function M.getLayout(cover_mode, count)
     local width, height = Screen:getWidth(), Screen:getHeight()
     local header_height = Screen:scaleBySize(HEADER_SIZE) + Size.border.thin
     local page_bar_height = Screen:scaleBySize(54)
@@ -1153,7 +1115,7 @@ function M.getLayout(cover_mode, count, mode)
                 reserved_height = reserved,
             }
         end
-        local row = ShelfRow:new{ width = width, text = "", font_size = mode == "public_account" and 22 or 20 }
+        local row = ShelfRow:new{ width = width, text = "", font_size = 20 }
         local row_height = row:getSize().h + 1
         if row.free then row:free() end
         return { page_size = math.max(1, math.floor((height - reserved) / row_height)) }
@@ -1168,14 +1130,12 @@ function M.show(data, callbacks)
     local view = LibraryView:new{
         mode = data.mode,
         title = data.title,
-        wp_enable = data.wp_enable ~= false,
         books = data.books,
         groups = data.groups,
         group_key = data.group_key,
         group_label = data.group_label,
         total_books = data.total_books,
         scroll_offset = data.scroll_offset,
-        accounts = data.accounts,
         keyword = data.keyword,
         sort_label = data.sort_label,
         filter_label = data.filter_label,

@@ -15,8 +15,6 @@ package.preload["logger"] = function()
     }
 end
 package.preload["weread.lib.crypto"] = function() return {} end
-package.preload["weread.lib.reader_state"] = function() return {} end
-package.preload["weread.lib.protocol"] = function() return {} end
 package.preload["weread.lib.thoughts"] = function() return {} end
 
 local Content = require("weread/lib/content")

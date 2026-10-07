@@ -46,21 +46,26 @@ local function display_error(err)
     return text
 end
 
-local READER_BOOK_FIELDS = {
-    "book_id", "title", "author", "psvts", "pclts", "token", "reader_url",
+local BOOK_SNAPSHOT_FIELDS = {
+    "book_id", "title", "author", "version", "format",
     "chapter_uid", "chapter_idx", "chapter_offset", "progress", "summary",
     "_content_format", "cache_dir",
 }
+local BOOK_LEGACY_AUTH_FIELDS = {
+    "token", "vid", "access_token", "accessToken", "cookies", "psvts",
+}
 
-local function reader_book(book)
+local function book_snapshot(book)
     local snapshot = {}
-    for _, key in ipairs(READER_BOOK_FIELDS) do snapshot[key] = book[key] end
+    for _, key in ipairs(BOOK_SNAPSHOT_FIELDS) do snapshot[key] = book[key] end
     return snapshot
 end
 
-local function apply_reader_book(book, updated)
-    -- Include nil values when a fresh reader session drops old credentials.
-    for _, key in ipairs(READER_BOOK_FIELDS) do book[key] = updated[key] end
+local function apply_book_snapshot(book, updated)
+    -- Copy nil values too, so stale metadata is cleared when absent.
+    for _, key in ipairs(BOOK_SNAPSHOT_FIELDS) do book[key] = updated[key] end
+    -- Credentials now live only in the account auth record, never in a book.
+    for _, key in ipairs(BOOK_LEGACY_AUTH_FIELDS) do book[key] = nil end
 end
 
 local Downloader = {}
@@ -72,7 +77,7 @@ local RESUME_SKIP_BATCH_SIZE = 25
 --   show_info(text), show_transient(text, timeout),
 --   refresh_ui(), refresh_shelf(),
 --   open_file(path), safe_callback(label, fn),
---   require_login(cookie, api_key), run_online_task(label, fn),
+--   require_login(authenticated), run_online_task(label, fn),
 --   background_worker,                         -- host framework
 -- }
 function Downloader:new(o)
@@ -393,7 +398,6 @@ function Downloader:_applyPrefetchResult(dl, result)
         target.cached_chapters = target.cached_chapters or {}
         target.cached_chapters[uid] = value.path
         target.cache_dir = value.cache_dir or target.cache_dir
-        target.reader_url = target.reader_url or value.reader_url
         if value.annotation_document then
             target.annotation_documents = target.annotation_documents or {}
             target.annotation_documents[value.path] = value.annotation_document
@@ -511,8 +515,8 @@ function Downloader:start(book, chapters, suffix, options)
         end
         return false
     end
-    if options.prefetch and self.settings.is_cookie_configured
-        and not self.settings:is_cookie_configured() then
+    if options.prefetch and self.settings.is_authenticated
+        and not self.settings:is_authenticated() then
         if type(options.on_complete) == "function" then
             pcall(options.on_complete, false, "authentication_required")
         end
@@ -650,11 +654,11 @@ function Downloader:start(book, chapters, suffix, options)
         local ok_init, err_init = pcall(function()
             self:_setStage(dl, _("Connecting to WeRead..."))
             local updated = self:_runInterruptible(dl, function()
-                Content.ensure_reader_state(self.client, book)
-                return reader_book(book)
+                Content.ensure_book_info(self.client, book)
+                return book_snapshot(book)
             end)
             if dl.cancelled then return end
-            apply_reader_book(book, updated)
+            apply_book_snapshot(book, updated)
             self:_setStage(dl, _("Preparing download..."))
             local cache = self.settings.get
                 and self.settings:get("cache", {}) or {}
@@ -1204,9 +1208,6 @@ function Downloader:_step(dl)
             apply_cache_result(dl.book)
             if record ~= dl.book then apply_cache_result(record) end
             record.cache_dir = dl.book.cache_dir or record.cache_dir
-            record.reader_url = record.reader_url
-                or dl.book.reader_url or WeRead.reader_url(book_id)
-            dl.book.reader_url = dl.book.reader_url or record.reader_url
             books[book_id] = record
             self.settings:set("books", books)
             self.settings:flush()
@@ -1320,7 +1321,7 @@ function Downloader:_step(dl)
         return self:_runInterruptible(dl, function()
             local xhtml = Content.fetch_single_chapter_source(
                 self.client, self.settings, dl.book, chapter, dl.state)
-            return { xhtml = xhtml, state = dl.state, book = reader_book(dl.book) }
+            return { xhtml = xhtml, state = dl.state, book = book_snapshot(dl.book) }
         end)
     end)
     if dl.cancelled then self:_step(dl); return end
@@ -1331,7 +1332,7 @@ function Downloader:_step(dl)
     end
     local xhtml = result.xhtml
     dl.state = result.state
-    apply_reader_book(dl.book, result.book)
+    apply_book_snapshot(dl.book, result.book)
     if dl.chapter_source_retries then
         dl.chapter_source_retries[tostring(chapter.chapterUid or dl.index)] = nil
     end

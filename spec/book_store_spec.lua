@@ -41,7 +41,6 @@ local ok, index = BookStore.save(settings, "book/42", {
     author = "Fixture author",
     progress = 37,
     chapter_uid = 9,
-    mp_articles = { { title = "Fixture article" } },
     chapters = { { chapterUid = 9 } },
 })
 expect(ok == true, "split book save failed")
@@ -64,16 +63,11 @@ expect(exists(index.cache_dir .. "/metadata.json"),
     "metadata file was not written")
 expect(exists(index.cache_dir .. "/reading_state.json"),
     "reading-state file was not written")
-expect(exists(index.cache_dir .. "/articles.json"),
-    "article file was not written")
-
 local loaded = BookStore.load(settings, "book/42", index)
 expect(loaded.title == "Fixture book" and loaded.author == "Fixture author",
     "metadata did not round-trip")
 expect(loaded.progress == 37 and loaded.chapter_uid == 9,
     "reading state did not round-trip")
-expect(loaded.mp_articles[1].title == "Fixture article",
-    "article data did not round-trip")
 expect(loaded.chapters == nil,
     "large chapter catalog should not be stored in the book record")
 expect(loaded.cache_dir == index.cache_dir,
@@ -85,12 +79,11 @@ ok, index = BookStore.save(settings, "book/42", {
     cache_dir = index.cache_dir,
 })
 expect(ok == true, "metadata-only update failed")
-expect(not exists(index.cache_dir .. "/reading_state.json")
-    and not exists(index.cache_dir .. "/articles.json"),
-    "stale split files were not removed")
+expect(not exists(index.cache_dir .. "/reading_state.json"),
+    "stale reading state was not removed")
 loaded = BookStore.load(settings, "book/42", index)
 expect(loaded.title == "Metadata only"
-    and loaded.progress == nil and loaded.mp_articles == nil,
+    and loaded.progress == nil,
     "removed split state reappeared after reload")
 
 os.remove(index.cache_dir .. "/metadata.json")

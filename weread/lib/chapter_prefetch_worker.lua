@@ -14,7 +14,7 @@ function M.run(settings, client, book, chapter, context)
     local workspace
     local ok, result = xpcall(function()
         context.emit { stage = "reader" }
-        Content.ensure_reader_state(client, book)
+        Content.ensure_book_info(client, book)
         context.checkCancelled()
 
         local cache = settings:get("cache", {})
@@ -77,7 +77,6 @@ function M.run(settings, client, book, chapter, context)
             path = path,
             chapter_uid = uid,
             cache_dir = book.cache_dir,
-            reader_url = book.reader_url,
             annotation_document = descriptor,
             footnote_stats = stats,
             auth = auth_result(),

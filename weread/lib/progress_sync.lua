@@ -9,10 +9,7 @@ local OPEN_DELAY_SECONDS = 0.6
 local RESUME_RECHECK_SECONDS = 5 * 60
 local PULL_RETRY_DELAY_SECONDS = 15
 local PULL_MAX_RETRIES = 3
-local BUSY_RETRY_SECONDS = 2
-local BUSY_RETRY_LIMIT = 10
 local SAME_THRESHOLD_PERCENT = 2
-local SOURCE_CONFLICT_THRESHOLD_PERCENT = 2
 
 local function log(level, ...)
     if type(logger[level]) == "function" then
@@ -27,9 +24,6 @@ local function copy(value)
     return result
 end
 
-local function is_mp_book(book_id)
-    return tostring(book_id or ""):sub(1, 7) == "MP_WXS_"
-end
 
 local function document_path(document)
     if not document then return nil end
@@ -48,7 +42,6 @@ function ProgressSync:new(options)
     assert(type(options.get_chapters) == "function", "get_chapters callback is required")
     assert(type(options.get_file_context) == "function", "get_file_context callback is required")
     assert(type(options.run_online) == "function", "run_online callback is required")
-    assert(type(options.upload_position) == "function", "upload_position callback is required")
     assert(type(options.goto_fraction) == "function", "goto_fraction callback is required")
     assert(type(options.open_chapter) == "function", "open_chapter callback is required")
 
@@ -64,7 +57,6 @@ function ProgressSync:new(options)
         refresh_catalog = options.refresh_catalog,
         get_file_context = options.get_file_context,
         run_online = options.run_online,
-        upload_position = options.upload_position,
         goto_fraction = options.goto_fraction,
         open_chapter = options.open_chapter,
         is_online = options.is_online or function() return true end,
@@ -143,7 +135,7 @@ end
 
 function ProgressSync:capture_local()
     local book_id = self.detect_book()
-    if not book_id or is_mp_book(book_id) then
+    if not book_id then
         return nil, "document_not_weread"
     end
     book_id = tostring(book_id)
@@ -245,38 +237,9 @@ function ProgressSync:_clear_verified(reason)
 end
 
 function ProgressSync:_fetch_remote(book_id, chapters)
-    local gateway
-    local web
-    local gateway_error
-    local web_error
-    if self.settings:is_api_configured() then
-        local ok, result = pcall(self.client.get_progress, self.client, book_id)
-        if ok then
-            gateway, gateway_error = PositionMapper.normalize_remote(
-                result, book_id, "gateway", chapters)
-        else
-            gateway_error = tostring(result)
-        end
-    end
-    if self.settings:is_cookie_configured() then
-        local ok, result = pcall(
-            self.client.get_web_progress, self.client, book_id)
-        if ok then
-            web, web_error = PositionMapper.normalize_remote(
-                result, book_id, "web", chapters)
-        else
-            web_error = tostring(result)
-        end
-    end
-    local selected = PositionMapper.choose_remote(
-        web,
-        gateway,
-        SOURCE_CONFLICT_THRESHOLD_PERCENT
-    )
-    if not selected then
-        return nil, gateway_error or web_error or "remote_unavailable"
-    end
-    return selected
+    local ok, result = pcall(self.client.get_progress, self.client, book_id)
+    if not ok then return nil, tostring(result) end
+    return PositionMapper.normalize_remote(result, book_id, "native", chapters)
 end
 
 function ProgressSync:_apply_remote(remote, context, options)
@@ -340,80 +303,6 @@ function ProgressSync:_apply_remote(remote, context, options)
     return true
 end
 
-function ProgressSync:_upload_snapshot(position, reason, show_result)
-    if type(position) ~= "table" then return false end
-    local book_id = tostring(position.book_id or self.current_book_id or "")
-    if book_id == "" or self.uploading then return false end
-    self:_persist(book_id, {
-        pending_upload_position = position,
-        pending_upload_reason = reason or "unspecified",
-    })
-    if not self.is_online() then
-        self.state = "offline"
-        if show_result then self.notify("offline", {}) end
-        return false
-    end
-    self.uploading = true
-    self.state = "uploading"
-    local attempts = 0
-    local attempt
-    attempt = function()
-        attempts = attempts + 1
-        local ok, accepted, outcome = pcall(
-            self.upload_position,
-            book_id,
-            copy(position),
-            0
-        )
-        if ok and not accepted and type(outcome) == "table"
-            and outcome.error_kind == "busy"
-            and attempts < BUSY_RETRY_LIMIT then
-            self.scheduler:scheduleIn(BUSY_RETRY_SECONDS, attempt)
-            return
-        end
-        self.uploading = false
-        if ok and accepted then
-            self.state = "verified"
-            self.dirty = false
-            self.last_uploaded_position = copy(position)
-            self:_persist(book_id, {
-                last_local_position = position,
-                last_uploaded_position = position,
-                last_upload_at = self.now(),
-                pending_upload_position = false,
-                pending_upload_reason = false,
-                last_sync_error = false,
-            })
-            log("info", "upload accepted:",
-                "book=", book_id,
-                "percent=", tostring(position.percent),
-                "reason=", tostring(reason))
-            if show_result then
-                self.notify("upload_success", { position = position })
-            end
-            return
-        end
-        local error_message = ok and type(outcome) == "table"
-            and outcome.error or outcome
-        self.state = "error"
-        self:_persist(book_id, {
-            last_sync_error = tostring(error_message or "upload_failed"),
-        })
-        log("warn", "upload failed:", tostring(error_message))
-        if show_result then
-            self.notify("upload_failed", {
-                error = tostring(error_message or "upload_failed"),
-            })
-        end
-    end
-    local started = self.run_online("progress_upload", attempt)
-    if not started then
-        self.uploading = false
-        self.state = "offline"
-    end
-    return started == true
-end
-
 function ProgressSync:_keep_local(local_position, remote, options)
     options = options or {}
     self.dirty = not PositionMapper.same_position(local_position, remote)
@@ -423,9 +312,7 @@ function ProgressSync:_keep_local(local_position, remote, options)
         local_position,
         remote
     )
-    if options.upload_now then
-        self:_upload_snapshot(local_position, options.reason, true)
-    elseif options.manual then
+    if options.manual then
         self.notify("local_kept", { position = local_position })
     end
 end
@@ -466,7 +353,6 @@ function ProgressSync:_resolve(local_position, remote, context, options)
             book_title = context.book.title or context.book_id,
             local_position = copy(local_position),
             remote_position = copy(remote),
-            source_conflict = remote.conflict == true,
             use_remote = function()
                 if not choice_is_current() then return end
                 local ok, reason = self:_apply_remote(
@@ -480,8 +366,6 @@ function ProgressSync:_resolve(local_position, remote, context, options)
                 if not choice_is_current() then return end
                 self:_keep_local(local_position, remote, {
                     manual = options.manual,
-                    upload_now = true,
-                    reason = "explicit_local_choice",
                 })
             end,
         })
@@ -498,8 +382,6 @@ function ProgressSync:_resolve(local_position, remote, context, options)
     else
         self:_keep_local(local_position, remote, {
             manual = options.manual,
-            upload_now = options.manual == true,
-            reason = "manual_sync",
         })
     end
 end
@@ -551,8 +433,7 @@ function ProgressSync:_pull(options)
             return false
         end
     end
-    if not self.settings:is_api_configured()
-        and not self.settings:is_cookie_configured() then
+    if not self.settings:is_authenticated() then
         if options.manual then self.notify("authentication_required", {}) end
         return false
     end
@@ -693,7 +574,7 @@ function ProgressSync:on_reader_ready()
     self.scheduler:scheduleIn(OPEN_DELAY_SECONDS, function()
         if generation ~= self.generation then return end
         local book_id = self.detect_book()
-        if not book_id or is_mp_book(book_id) then
+        if not book_id then
             self.state = "unsupported"
             return
         end
@@ -729,17 +610,6 @@ function ProgressSync:on_page_update()
 end
 
 function ProgressSync:on_close_document()
-    local position = self:capture_local() or self.local_position
-    if position and self.verified
-        and self:_config().upload_on_close == true then
-        if not self.local_position
-            or not PositionMapper.same_position(position, self.local_position) then
-            self.dirty = true
-        end
-        if self.dirty then
-            self:_upload_snapshot(position, "document_close", false)
-        end
-    end
     self.generation = self.generation + 1
     self.current_book_id = nil
     self.verified = false
@@ -754,10 +624,6 @@ function ProgressSync:on_suspend()
     if position and self.local_position
         and not PositionMapper.same_position(position, self.local_position) then
         self.dirty = true
-    end
-    if position and self.verified and self.dirty
-        and self:_config().upload_on_close == true then
-        self:_upload_snapshot(position, "suspend", false)
     end
 end
 
@@ -775,27 +641,6 @@ function ProgressSync:sync_now()
     return self:_pull({ manual = true })
 end
 
-function ProgressSync:position_for_report(book_id)
-    local current = self.detect_book()
-    if not current or tostring(current) ~= tostring(book_id)
-        or is_mp_book(book_id) then
-        return nil, nil, false
-    end
-    if not self.verified then
-        return nil, "progress_unverified", true
-    end
-    local position, reason = self:capture_local()
-    if not position then
-        return nil, reason or "position_unavailable", true
-    end
-    if self.local_position
-        and not PositionMapper.same_position(position, self.local_position) then
-        self.dirty = true
-    end
-    self.local_position = position
-    return position, nil, true
-end
-
 function ProgressSync:status()
     return {
         state = self.state,
@@ -803,7 +648,6 @@ function ProgressSync:status()
         verified = self.verified,
         dirty = self.dirty,
         pulling = self.pulling == true,
-        uploading = self.uploading == true,
         local_position = copy(self.local_position),
         remote_position = copy(self.remote_position),
     }

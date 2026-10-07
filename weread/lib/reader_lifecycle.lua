@@ -3,7 +3,6 @@ local Content = require("weread.lib.content")
 local logger = require("weread.lib.logger").scoped("Prefetch")
 local UIManager = require("ui/uimanager")
 local PluginUtil = require("weread.lib.plugin_util")
-local WeRead = require("weread.lib.protocol")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
 local display_error = PluginUtil.display_error
@@ -57,12 +56,12 @@ end
 
 function M:onWeReadSyncProgress()
     local book_id = self:detectWeReadBook()
-    if not book_id or WeRead.is_mp_book(book_id) then
+    if not book_id then
         self:showTransientInfo(
             _("This action requires an open WeRead book."), 1)
         return false
     end
-    if not self:requireLogin(true, false) then
+    if not self:requireLogin(true) then
         return false
     end
     self.progress_sync:sync_now()
@@ -159,11 +158,6 @@ function M:onReaderReady()
         if prefetch_session_gen ~= self._reader_session_gen then return end
         self:maybePrefetchNextChapter(weread_book_id)
     end)
-    local _started, _title, reason = self.read_report:on_reader_ready()
-    local rr = self.settings:get("read_report")
-    if rr.enabled and rr.mode == "auto" and reason == "document_not_weread" then
-        self:showTransientInfo(_("Current book is not from WeRead, reading time not reported"), 1)
-    end
     perf("reader_services", annotations_ready)
     perf("reader_ready_total", opened)
 end
@@ -178,9 +172,6 @@ function M:onPosUpdate()
 end
 
 function M:onCloseDocument()
-    -- Capture the immutable local position while the document is still alive.
-    -- The network upload is scheduled; stopping ReadReport below also frees any
-    -- in-flight report slot before that scheduled upload begins.
     self.progress_sync:on_close_document()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
     self.downloader:cancelPrefetch("document_closed")
@@ -197,7 +188,6 @@ function M:onCloseDocument()
         self._orig_onEndOfBook = nil
     end
 
-    self.read_report:on_close_document()
 end
 
 function M:showPrefetchNotice(text, timeout)
@@ -318,24 +308,14 @@ function M:maybePrefetchNextChapter(book_id)
     })
 end
 
-function M:maybeStartReadReport()
-    return self.read_report:maybe_start("menu")
-end
-
-function M:stopReadReport(reason)
-    self.read_report:stop(reason or "explicit_stop")
-end
-
 function M:onSuspend()
     if self._cancelUnifiedAnnotationSync then self:_cancelUnifiedAnnotationSync() end
     self._annotation_pending_prefetch = nil
     self.progress_sync:on_suspend()
-    self.read_report:on_suspend()
 end
 
 function M:onResume()
     self.progress_sync:on_resume()
-    self.read_report:on_resume()
 end
 
 function M:detectWeReadBook()

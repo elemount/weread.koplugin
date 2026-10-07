@@ -131,31 +131,6 @@ function PositionMapper.normalize_remote(value, book_id, source, chapters)
     return remote
 end
 
-function PositionMapper.choose_remote(web, gateway, threshold)
-    threshold = math.max(0, tonumber(threshold) or 2)
-    if not web then return gateway end
-    if not gateway then return web end
-
-    local percent_gap = math.abs(
-        (tonumber(web.percent) or 0) - (tonumber(gateway.percent) or 0)
-    )
-    local chapter_differs = web.chapter_uid ~= nil
-        and gateway.chapter_uid ~= nil
-        and tostring(web.chapter_uid) ~= tostring(gateway.chapter_uid)
-    local conflict = percent_gap > threshold
-        or (chapter_differs and percent_gap > 0.5)
-    local selected
-    if (tonumber(gateway.updated_at) or 0) > (tonumber(web.updated_at) or 0) then
-        selected = gateway
-    else
-        selected = web
-    end
-    local result = {}
-    for key, item in pairs(selected) do result[key] = item end
-    result.conflict = conflict
-    result.sources = { web = web, gateway = gateway }
-    return result
-end
 
 function PositionMapper.local_to_remote(chapters, fraction, options)
     options = options or {}

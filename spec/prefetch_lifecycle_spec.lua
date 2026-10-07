@@ -21,7 +21,7 @@ package.preload["weread.lib.logger"] = function()
     }
 end
 package.preload["weread.lib.protocol"] = function()
-    return { is_mp_book = function(book_id) return book_id == "mp-book" end }
+    return {}
 end
 package.preload["ui/uimanager"] = function()
     return { scheduleIn = function() end }

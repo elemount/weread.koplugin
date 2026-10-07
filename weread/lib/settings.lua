@@ -1,20 +1,20 @@
 local DataStorage = require("datastorage")
 local BookStore = require("weread.lib.book_store")
-local Cookie = require("weread.lib.cookie")
 local LuaSettings = require("luasettings")
 local lfs = require("libs/libkoreader-lfs")
 
 local Settings = {}
 Settings.__index = Settings
-Settings.AUTH_SCHEMA_VERSION = 1
+Settings.AUTH_SCHEMA_VERSION = 3
 
 local defaults = {
     auth_schema_version = Settings.AUTH_SCHEMA_VERSION,
     device_fingerprint = "",
-    api_key = "",
-    cookies = {},
-    wr_ticket = "",
-    wr_wrpa = "",
+    auth = {
+        vid = "",
+        access_token = "",
+        refresh_token = "",
+    },
     account = {
         name = "",
         user_vid = "",
@@ -25,13 +25,10 @@ local defaults = {
     downloads = {},
     sync = {
         pull_on_open = false,
-        upload_on_close = false,
         ask_on_conflict = true,
-        upload_interval_minutes = 0,
     },
     cache = {
         download_book_images = true,
-        download_mp_images = false,
         download_underlines_and_thoughts = false,
         prefetch_annotations = false,
         auto_prefetch_next_chapter = false,
@@ -43,14 +40,6 @@ local defaults = {
         -- Fraction of screen width on each side treated as the page-turn edge zone.
         edge_tap_ratio = 0.20,
         max_size_mb = 1024,
-    },
-    read_report = {
-        enabled = false,
-        mode = "manual",
-        book_id = "",
-        book_title = "",
-        interval_seconds = 30,
-        report_on_open = true,
     },
     thought_popup = {
         -- Thought popup height as a fraction of the screen height.
@@ -117,10 +106,9 @@ local function ensure_dir(path)
 end
 
 local function clear_auth_store(store)
-    store:saveSetting("api_key", "")
-    store:saveSetting("cookies", {})
-    store:saveSetting("wr_ticket", "")
-    store:saveSetting("wr_wrpa", "")
+    store:saveSetting("api_key", nil)
+    store:saveSetting("cookies", nil)
+    store:saveSetting("auth", deepcopy(defaults.auth))
     store:saveSetting("account", deepcopy(defaults.account))
 end
 
@@ -145,11 +133,11 @@ function Settings:new()
     obj.store = LuaSettings:open(obj.settings_file)
     if mock_endpoint then
         obj.store:saveSetting("auth_schema_version", Settings.AUTH_SCHEMA_VERSION)
-        obj.store:saveSetting("api_key", "mock-api-key")
-        obj.store:saveSetting("cookies", { wr_skey = "mock-only", wr_vid = "900000" })
+        obj.store:saveSetting("auth", {
+            vid = "900000", access_token = "mock-only", refresh_token = "",
+        })
+        obj.store:saveSetting("cookies", nil)
         obj.store:saveSetting("account", { name = "Mock", user_vid = "900000", login_method = "mock" })
-        obj.store:saveSetting("wr_ticket", "")
-        obj.store:saveSetting("wr_wrpa", "")
         -- A test must not move downloaded files into a production cache.
         obj.store:saveSetting("download_dir", "")
         obj.store:flush()
@@ -158,14 +146,26 @@ function Settings:new()
     local download_dir = obj.store:readSetting("download_dir", "")
     obj.cache_dir = (type(download_dir) == "string" and download_dir ~= "") and download_dir or obj.default_cache_dir
     ensure_dir(obj.cache_dir)
+    local sync = obj.store:readSetting("sync", deepcopy(defaults.sync))
+    local sync_changed = false
+    for _, key in ipairs({ "upload_on_close", "upload_interval_minutes" }) do
+        if sync[key] ~= nil then
+            sync[key] = nil
+            sync_changed = true
+        end
+    end
+    if sync_changed then
+        obj.store:saveSetting("sync", sync)
+        obj.store:flush()
+    end
     local cache = obj.store:readSetting("cache", deepcopy(defaults.cache))
     local cache_changed = false
     if cache.download_book_images == nil then
         cache.download_book_images = cache.download_images ~= false
         cache_changed = true
     end
-    if cache.download_mp_images == nil then
-        cache.download_mp_images = false
+    if cache.download_mp_images ~= nil then
+        cache.download_mp_images = nil
         cache_changed = true
     end
     if cache.book_footnotes_in_popup ~= nil then
@@ -212,6 +212,10 @@ function Settings:new()
     end
     local legacy_changed = false
     for _, key in ipairs({
+        "api_key",
+        "wr_ticket",
+        "wr_wrpa",
+        "read_report",
         "config_auth_fingerprint",
         "config_preferences_fingerprint",
         "config_loaded",
@@ -227,12 +231,41 @@ function Settings:new()
         end
     end
     local stored_auth_version = tonumber(obj.store:readSetting("auth_schema_version", 0)) or 0
-    if stored_auth_version < Settings.AUTH_SCHEMA_VERSION then
+    if stored_auth_version < 1 then
         -- Authentication before schema v1 may have come from legacy manual
         -- flows and has no reliable QR account provenance.
         -- Invalidate only credentials; books, downloads and user preferences
         -- remain intact and the UI will guide the user through a fresh QR login.
         clear_auth_store(obj.store)
+        obj.store:saveSetting("auth_schema_version", Settings.AUTH_SCHEMA_VERSION)
+        legacy_changed = true
+    elseif stored_auth_version < 2 then
+        -- v1 stored the APK vid/accessToken pair inside a cookie jar. Keep a
+        -- valid QR login while moving it into its own native auth record.
+        local cookies = obj.store:readSetting("cookies", {}) or {}
+        local account = obj.store:readSetting("account", {}) or {}
+        local vid = cookies.wr_vid or account.user_vid or ""
+        local access_token = cookies.wr_skey or ""
+        obj.store:saveSetting("auth", {
+            vid = tostring(vid),
+            access_token = tostring(access_token),
+            refresh_token = "",
+        })
+        obj.store:saveSetting("cookies", nil)
+        obj.store:saveSetting("auth_schema_version", 2)
+        stored_auth_version = 2
+        legacy_changed = true
+    end
+    if stored_auth_version > 0 and stored_auth_version < Settings.AUTH_SCHEMA_VERSION then
+        -- v2 has native QR credentials but did not retain the refresh token
+        -- returned by /login. Preserve the active session and add the field;
+        -- it will be populated after the next QR login.
+        local auth = obj.store:readSetting("auth", {}) or {}
+        obj.store:saveSetting("auth", {
+            vid = tostring(auth.vid or ""),
+            access_token = tostring(auth.access_token or ""),
+            refresh_token = tostring(auth.refresh_token or ""),
+        })
         obj.store:saveSetting("auth_schema_version", Settings.AUTH_SCHEMA_VERSION)
         legacy_changed = true
     end
@@ -291,22 +324,22 @@ end
 
 function Settings:get_device_fingerprint()
     local fingerprint = self:get("device_fingerprint", "")
-    if type(fingerprint) == "string" and #fingerprint <= 10
-        and fingerprint:match("^%d+$") and tonumber(fingerprint) <= 4294967295 then
+    if type(fingerprint) == "string" and #fingerprint == 32
+        and fingerprint:match("^eink%d+$") then
         return fingerprint
     end
 
-    -- Match the website's unsigned 32-bit decimal wr_fp format. This identifies
-    -- an installation, not an account, and must survive logout and QR retries.
+    -- The APK uses an "eink"-prefixed device ID derived from Android-only
+    -- hardware values. Keep a KOReader-specific ID in the same format; it must
+    -- survive logout and QR retries.
     local source = io.open("/dev/urandom", "rb")
     if not source then error("Could not generate WeRead device fingerprint") end
-    local bytes = source:read(4)
+    local bytes = source:read(8)
     source:close()
-    if not bytes or #bytes ~= 4 then
+    if not bytes or #bytes ~= 8 then
         error("Could not generate WeRead device fingerprint")
     end
-    local a, b, c, d = bytes:byte(1, 4)
-    fingerprint = string.format("%.0f", ((a * 256 + b) * 256 + c) * 256 + d)
+    fingerprint = require("weread.lib.device_identity").make_device_id(bytes)
     self:set("device_fingerprint", fingerprint)
     self:flush()
     return fingerprint
@@ -317,24 +350,28 @@ function Settings:update_auth(credentials, options)
     options = options or {}
     local changed = false
 
-    if type(credentials.cookies) == "table" then
-        local cookies = credentials.cookies
-        if options.replace_cookies ~= true then
-            cookies = Cookie.merge(self:get("cookies", {}), cookies)
+    if type(credentials.auth) == "table" then
+        local auth = credentials.auth
+        if options.replace_auth ~= true then
+            local current = self:get("auth", {}) or {}
+            auth = {
+                vid = auth.vid ~= nil and auth.vid or current.vid or "",
+                access_token = auth.access_token ~= nil
+                    and auth.access_token or current.access_token or "",
+                refresh_token = auth.refresh_token ~= nil
+                    and auth.refresh_token or current.refresh_token or "",
+            }
         else
-            cookies = deepcopy(cookies)
+            auth = {
+                vid = tostring(auth.vid or ""),
+                access_token = tostring(auth.access_token or ""),
+                refresh_token = tostring(auth.refresh_token or ""),
+            }
         end
-        self:set("cookies", cookies)
+        self:set("auth", auth)
         changed = true
     end
 
-    for _, key in ipairs({ "api_key", "wr_ticket", "wr_wrpa" }) do
-        local value = credentials[key]
-        if type(value) == "string" then
-            self:set(key, value)
-            changed = true
-        end
-    end
     if type(credentials.account) == "table" then
         self:set("account", deepcopy(credentials.account))
         changed = true
@@ -344,17 +381,6 @@ function Settings:update_auth(credentials, options)
         self:flush()
     end
     return changed
-end
-
-function Settings:merge_set_cookie(set_cookie, options)
-    if not set_cookie or set_cookie == "" then
-        return false
-    end
-    local cookies = Cookie.merge_set_cookie(self:get("cookies", {}), set_cookie)
-    return self:update_auth({ cookies = cookies }, {
-        replace_cookies = true,
-        flush = not options or options.flush ~= false,
-    })
 end
 
 function Settings:get_all()
@@ -389,12 +415,14 @@ function Settings:reset_account()
     self:flush()
 end
 
-function Settings:is_cookie_configured()
-    return Cookie.has_login_cookie(self:get("cookies", {})) == true
-end
-
-function Settings:is_api_configured()
-    return self:get("api_key", "") ~= ""
+function Settings:is_authenticated()
+    local auth = self:get("auth", {}) or {}
+    local vid = auth.vid
+    if type(vid) ~= "string" or vid == "" then
+        vid = (self:get("account", {}) or {}).user_vid
+    end
+    return type(vid) == "string" and vid ~= ""
+        and type(auth.access_token) == "string" and auth.access_token ~= ""
 end
 
 return Settings

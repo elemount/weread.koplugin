@@ -20,10 +20,6 @@ package.preload["weread.lib.crypto"] = function()
         end,
     }
 end
-package.preload["weread.lib.reader_state"] = function() return {} end
-package.preload["weread.lib.protocol"] = function()
-    return { reader_url = function(book_id) return "https://reader/" .. tostring(book_id) end }
-end
 package.preload["weread.lib.thoughts"] = function() return {} end
 package.preload["ffi/util"] = function()
     return {

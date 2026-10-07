@@ -31,7 +31,7 @@ local settings = {
     get = function()
         return { download_underlines_and_thoughts = false }
     end,
-    is_cookie_configured = function() return true end,
+    is_authenticated = function() return true end,
 }
 
 local ok, data = Thoughts.fetch_underlines(client, settings, "book", "chapter")

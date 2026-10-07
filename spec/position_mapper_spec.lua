@@ -114,7 +114,7 @@ test("remote offset is authoritative", function()
         chapterUid = 22,
         chapterIdx = 2,
         chapterOffset = 150,
-    }, "book", "gateway", chapters))
+    }, "book", "native", chapters))
     near(normalized.percent, 25, 0.0001, "recomputed percent")
     eq(normalized.position_basis, "chapter_offset", "basis")
 end)
@@ -141,16 +141,6 @@ test("remote single chapter requests chapter switch", function()
     near(target.fraction, 0.5, 0.0001, "chapter fraction")
     eq(target.requires_chapter_open, true, "chapter switch")
     eq(target.chapter.chapterUid, 22, "target chapter")
-end)
-
-test("remote source conflict chooses newest but flags conflict", function()
-    local selected = Mapper.choose_remote(
-        { percent = 20, updated_at = 10, source = "web" },
-        { percent = 40, updated_at = 20, source = "gateway" },
-        2
-    )
-    eq(selected.source, "gateway", "newest selected")
-    eq(selected.conflict, true, "conflict flagged")
 end)
 
 test("compare uses percentage point threshold", function()

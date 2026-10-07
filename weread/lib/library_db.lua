@@ -146,8 +146,7 @@ function LibraryDB:cacheShelf(books, archives)
             local book_id = book.book_id or book.bookId
             local payload, encode_err = encode(book)
             if book_id and payload then
-                local kind = tostring(book_id):match("^MP_WXS_") and "mp" or "book"
-                stmt:reset():bind(tostring(book_id), kind, payload, position, now):step()
+                stmt:reset():bind(tostring(book_id), "book", payload, position, now):step()
             elseif encode_err then
                 error(encode_err)
             end
@@ -232,8 +231,7 @@ function LibraryDB:putBook(book)
                 detail_payload=excluded.detail_payload,
                 detail_updated_at=excluded.detail_updated_at
         ]])
-        local kind = tostring(book_id):match("^MP_WXS_") and "mp" or "book"
-        stmt:reset():bind(tostring(book_id), kind, payload, payload, os.time()):step()
+        stmt:reset():bind(tostring(book_id), "book", payload, payload, os.time()):step()
     end)
     close_statement(stmt)
     pcall(function() db:close() end)

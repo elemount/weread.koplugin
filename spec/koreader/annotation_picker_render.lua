@@ -75,19 +75,17 @@ tap(chooser.layout[#chooser.layout][1]); assert(chooser.page == 1)
 tap(chooser.action_button); assert(removed)
 chooser:onClose()
 
-for _, mode in ipairs({ "books", "public_account" }) do
-    local shelf = Library.show({ mode = mode, books = {}, accounts = {}, groups = {} }, {})
-    draw("shelf-" .. mode)
-    local location, search = shelf._header_buttons[2], shelf._header_buttons[3]
-    assert(location.dimen.x + location.dimen.w < search.dimen.x, "source feedback fills the blank space")
-    local original_width = location.dimen.w
-    location:_doFeedbackHighlight()
-    UIManager:forceRePaint()
-    Screen:shot(evidence .. "/shelf-" .. mode .. "-pressed.png")
-    location:_undoFeedbackHighlight(false)
-    assert(location.dimen.w == original_width)
-    shelf:onClose()
-end
+local shelf = Library.show({ mode = "books", books = {}, groups = {} }, {})
+draw("shelf-books")
+local location, search = shelf._header_buttons[2], shelf._header_buttons[3]
+assert(location.dimen.x + location.dimen.w < search.dimen.x, "source feedback fills the blank space")
+local original_width = location.dimen.w
+location:_doFeedbackHighlight()
+UIManager:forceRePaint()
+Screen:shot(evidence .. "/shelf-books-pressed.png")
+location:_undoFeedbackHighlight(false)
+assert(location.dimen.w == original_width)
+shelf:onClose()
 -- Check the same real fonts/layout at a larger e-ink screen size.
 Screen.bb:free()
 Screen.bb = BB.new(1072, 1448)

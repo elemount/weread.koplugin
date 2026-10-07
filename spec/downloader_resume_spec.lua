@@ -60,7 +60,6 @@ end
 package.preload["weread.lib.protocol"] = function()
     return {
         normalize_cover_url = function(value) return value end,
-        reader_url = function(book_id) return "https://reader/" .. tostring(book_id) end,
     }
 end
 package.preload["weread.lib.i18n"] = function()
@@ -100,7 +99,7 @@ package.preload["weread.lib.content"] = function()
         asset_dir = "/cache/book/.weread-download-resume-full/images",
     }
     return {
-        ensure_reader_state = function() end,
+        ensure_book_info = function() end,
         open_full_download_workspace = function() return workspace end,
         load_full_download_css = function() return "body{}" end,
         full_download_workspace_used_asset_names = function() return {} end,

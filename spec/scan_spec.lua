@@ -7,10 +7,6 @@ local Scan = require("weread.lib.scan")
 
 local NOW = 1700000000
 
-local function is_mp(book_id)
-    return tostring(book_id or ""):sub(1, 7) == "MP_WXS_"
-end
-
 -- Build an lfs-like fake from a flat map of path -> "dir" | file size.
 local function make_fs(spec)
     local nodes = {}
@@ -111,33 +107,14 @@ test("matched book dir is imported with shelf metadata", function()
     eq(rec.updated_at, NOW, "updated_at stamped")
 end)
 
-test("matched MP dir is imported without cached_file", function()
-    local fs = make_fs({
-        ["/root"] = "dir",
-        ["/root/MP_WXS_abc"] = "dir",
-        ["/root/MP_WXS_abc/article1.html"] = 300,
-    })
-    local books = {}
-    local allowed = { ["MP_WXS_abc"] = { book_id = "MP_WXS_abc", title = "某公众号" } }
-    local added = scan(fs, books, allowed)
-    eq(added, 1, "added")
-    eq(books["MP_WXS_abc"].cached_file, nil, "no cached_file for MP")
-    eq(books["MP_WXS_abc"].cache_dir, "/root/MP_WXS_abc", "cache_dir")
-end)
-
 test("matched dir with wrong content type is ignored", function()
-    -- A regular book dir holding only html, and an MP dir holding only epub.
+    -- A regular book directory holding HTML instead of a supported book file.
     local fs = make_fs({
         ["/root"] = "dir",
         ["/root/123456"] = "dir",
         ["/root/123456/page.html"] = 100,
-        ["/root/MP_WXS_abc"] = "dir",
-        ["/root/MP_WXS_abc/file.epub"] = 100,
     })
-    local allowed = {
-        ["123456"] = { book_id = "123456" },
-        ["MP_WXS_abc"] = { book_id = "MP_WXS_abc" },
-    }
+    local allowed = { ["123456"] = { book_id = "123456" } }
     local added, updated = scan(fs, {}, allowed)
     eq(added, 0, "added")
     eq(updated, 0, "updated")
@@ -277,23 +254,6 @@ test("cached_chapters are remapped or dropped on rebind", function()
     local chapters = books["123456"].cached_chapters
     eq(chapters.c1, "/root/123456/ch1.xhtml", "existing chapter remapped")
     eq(chapters.c2, nil, "missing chapter dropped")
-end)
-
-test("MP record with stale cache_dir counts as pending update", function()
-    local fs = make_fs({
-        ["/root"] = "dir",
-        ["/root/MP_WXS_abc"] = "dir",
-        ["/root/MP_WXS_abc/article.html"] = 100,
-    })
-    local books = {
-        ["MP_WXS_abc"] = { book_id = "MP_WXS_abc", title = "某公众号", cache_dir = "/old/MP_WXS_abc" },
-    }
-    local allowed = { ["MP_WXS_abc"] = { book_id = "MP_WXS_abc" } }
-    local d_added, d_updated = scan(fs, books, allowed, true)
-    eq(d_updated, 1, "dry-run updated")
-    scan(fs, books, allowed)
-    eq(books["MP_WXS_abc"].cache_dir, "/root/MP_WXS_abc", "cache_dir rebound")
-    eq(books["MP_WXS_abc"].cached_file, nil, "MP still has no cached_file")
 end)
 
 test("unreadable root returns zeros", function()

@@ -37,9 +37,8 @@ function Groups.list(archives, books, unnamed_label, ungrouped_label)
                 grouped[id] = true
             end
         end
-        -- Public-account archives contain no regular books. The original
-        -- bookshelf already exposes those separately, so do not add a ghost
-        -- group for them. Empty user-created groups stay visible.
+        -- Ignore groups that refer only to unavailable books. Empty
+        -- user-created groups stay visible.
         if #members > 0 or #ids == 0 then
             groups[#groups + 1] = {
                 key = group_key(archive, label),

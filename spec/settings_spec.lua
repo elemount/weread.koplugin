@@ -108,16 +108,18 @@ expect(settings:get("shelf").view_mode == "list",
 expect(created_dirs[1] == "/data/weread"
     and created_dirs[2] == "/data/weread/cache",
     "settings directories were not initialized")
-expect(values.api_key == "" and next(values.cookies) == nil
-    and values.wr_ticket == "" and values.wr_wrpa == "",
+expect(values.api_key == nil and values.cookies == nil
+    and values.wr_ticket == nil and values.wr_wrpa == nil,
     "legacy authentication data was not invalidated")
-expect(values.account.name == "" and values.auth_schema_version == 1,
+expect(values.account.name == "" and values.auth_schema_version == 3
+        and values.auth.vid == "" and values.auth.access_token == ""
+        and values.auth.refresh_token == "",
     "authentication schema migration was incomplete")
 expect(values.books["42"].cache_dir == "/cache/42",
     "authentication migration changed the book index")
 expect(values.config_loaded == nil, "legacy setting was not removed")
 expect(values.cache.download_book_images == false
-    and values.cache.download_mp_images == false
+    and values.cache.download_mp_images == nil
     and values.cache.book_footnotes_in_popup == nil
     and values.cache.download_underlines_and_thoughts == false
     and values.cache.prefetch_annotations == false
@@ -148,16 +150,17 @@ expect(settings:has_legacy_book_records(),
 expect(minimal_index_checked, "book index was not passed to BookStore")
 
 settings:update_auth({
-    cookies = { wr_gid = "12345" },
-    api_key = "new-key",
+    auth = { vid = "123456", access_token = "new-access-token", refresh_token = "new-refresh-token" },
     account = { name = "new-user" },
 })
-expect(values.cookies.wr_gid == "12345" and values.api_key == "new-key",
+expect(values.auth.vid == "123456"
+    and values.auth.access_token == "new-access-token"
+    and values.auth.refresh_token == "new-refresh-token" and values.api_key == nil,
     "authentication update did not persist credentials")
-expect(values.account.name == "new-user" and settings:is_api_configured(),
-    "authentication account/API state was wrong")
-expect(settings:is_cookie_configured(),
-    "modern wr_gid login cookie was not recognized")
+expect(values.account.name == "new-user" and settings:is_authenticated(),
+    "native authentication account state was wrong")
+expect(settings:is_authenticated(),
+    "native vid/access token pair was not recognized")
 
 expect(settings:set_download_dir("/external/books") == "/external/books",
     "custom download directory was not selected")
@@ -168,14 +171,14 @@ expect(settings:set_download_dir("") == "/data/weread/cache",
 
 local original_environment = getfenv(Settings.get_device_fingerprint)
 local random_reads = 0
-local random_bytes = string.char(255, 254, 253, 252)
+local random_bytes = string.char(255, 254, 253, 252, 251, 250, 249, 248)
 local random_closed = false
 local function open_random(path, mode)
     expect(path == "/dev/urandom" and mode == "rb", "wrong randomness source")
     random_reads = random_reads + 1
     return {
         read = function(_self, length)
-            expect(length == 4, "fingerprint should use 32 random bits")
+            expect(length == 8, "fingerprint should use 64 random bits")
             return random_bytes
         end,
         close = function() random_closed = true end,
@@ -186,22 +189,24 @@ setfenv(Settings.get_device_fingerprint, setmetatable({ io = { open = open_rando
 }))
 local before_fingerprint_flush = flush_count
 local fingerprint = settings:get_device_fingerprint()
-expect(fingerprint == "4294901244" and random_closed,
-    "fingerprint must use unsigned decimal format and close the random source")
+expect(fingerprint:match("^eink%d+$") and #fingerprint == 32 and random_closed,
+    "fingerprint must use the APK e-ink ID shape and close the random source")
 expect(values.device_fingerprint == fingerprint and flush_count == before_fingerprint_flush + 1,
     "fingerprint must be persisted before login begins")
 expect(Settings:new():get_device_fingerprint() == fingerprint and random_reads == 1,
     "reopening settings should reuse the existing fingerprint")
 
 settings:reset_account()
-expect(values.api_key == "" and next(values.cookies) == nil
+expect(values.api_key == nil and values.cookies == nil
+    and values.auth.vid == "" and values.auth.access_token == ""
+    and values.auth.refresh_token == ""
     and values.account.name == "",
     "account reset left credentials behind")
 expect(settings:get_device_fingerprint() == fingerprint and random_reads == 1,
     "logout must not rotate the device fingerprint")
 
 values.device_fingerprint = ""
-random_bytes = string.char(1, 2, 3, 4)
+random_bytes = string.char(1, 2, 3, 4, 5, 6, 7, 8)
 expect(settings:get_device_fingerprint() ~= fingerprint and random_reads == 2,
     "a separate installation should generate its own fingerprint")
 values.device_fingerprint = "invalid; cookie=value"
@@ -210,5 +215,17 @@ local ok = pcall(function() settings:get_device_fingerprint() end)
 expect(not ok and values.device_fingerprint == "invalid; cookie=value",
     "failed entropy reads must not save a partial or shared fallback fingerprint")
 setfenv(Settings.get_device_fingerprint, original_environment)
+
+values.auth_schema_version = 2
+values.auth = { vid = "existing-vid", access_token = "existing-access" }
+local before_refresh_migration_flush = flush_count
+Settings:new()
+expect(values.auth_schema_version == 3
+    and values.auth.vid == "existing-vid"
+    and values.auth.access_token == "existing-access"
+    and values.auth.refresh_token == "",
+    "v2 migration did not preserve the active session and add refresh-token storage")
+expect(flush_count == before_refresh_migration_flush + 1,
+    "refresh-token schema migration should flush once")
 
 print(("settings_spec: %d checks"):format(checks))

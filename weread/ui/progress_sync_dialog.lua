@@ -16,22 +16,12 @@ local function percent(position)
 end
 
 function ProgressSyncDialog.show_choice(context)
-    local message
-    if context.source_conflict then
-        message = T(_(
-            "WeRead's two progress sources disagree for \"%1\".\n\n"
-            .. "KOReader: %2%\nSelected cloud position: %3%\n\n"
-            .. "Choose which position to keep."
-        ), context.book_title, percent(context.local_position),
-            percent(context.remote_position))
-    else
-        message = T(_(
-            "Reading progress differs for \"%1\".\n\n"
-            .. "KOReader: %2%\nWeRead: %3%\n\n"
-            .. "Choose which position to keep."
-        ), context.book_title, percent(context.local_position),
-            percent(context.remote_position))
-    end
+    local message = T(_(
+        "Reading progress differs for \"%1\".\n\n"
+        .. "KOReader: %2%\nWeRead: %3%\n\n"
+        .. "Choose which position to keep."
+    ), context.book_title, percent(context.local_position),
+        percent(context.remote_position))
 
     UIManager:show(ConfirmBox:new{
         title = _("Reading progress sync"),
@@ -46,12 +36,7 @@ end
 function ProgressSyncDialog.notify(code, data)
     data = data or {}
     local text
-    if code == "upload_success" then
-        text = T(_("Progress uploaded to WeRead: %1%"),
-            percent(data.position))
-    elseif code == "upload_failed" then
-        text = T(_("Progress upload failed:\n%1"), tostring(data.error or ""))
-    elseif code == "already_synced" then
+    if code == "already_synced" then
         text = _("KOReader and WeRead are already at the same position.")
     elseif code == "remote_applied" then
         text = T(_("Jumped to WeRead progress: %1%"),

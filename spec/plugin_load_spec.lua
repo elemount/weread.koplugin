@@ -48,14 +48,7 @@ package.preload["ui/widget/container/widgetcontainer"] = function()
     return base
 end
 
-local settings_values = {
-    read_report = {
-        enabled = false,
-        mode = "manual",
-        book_id = "",
-        report_on_open = true,
-    },
-}
+local settings_values = {}
 local fake_settings = {
     data_dir = "/tmp/weread-plugin-load",
     get = function(_self, key, default)
@@ -118,14 +111,6 @@ end
 package.preload["weread.lib.qr_login"] = function()
     return { new = function() return { kind = "qr_login" } end }
 end
-package.preload["weread.lib.read_report"] = function()
-    return {
-        new = function(_self, options)
-            options.maybe_start = function() end
-            return options
-        end,
-    }
-end
 package.preload["weread.lib.progress_sync"] = function()
     return { new = function(_self, options) return options end }
 end
@@ -164,9 +149,6 @@ package.preload["weread.ui.menu"] = function()
     }
 end
 package.preload["weread.ui.cache"] = function()
-    return {}
-end
-package.preload["weread.ui.read_report"] = function()
     return {}
 end
 package.preload["weread.ui.library"] = function()

@@ -92,7 +92,7 @@ function M:_prepareAnnotationContext(online, refresh_catalog)
     if online and (not catalog or refresh_catalog) then
         local remote = { bookId = book_id, book_id = book_id, title = binding.title,
             author = binding.author, format = binding.format }
-        Content.ensure_reader_state(self.client, remote)
+        Content.ensure_book_info(self.client, remote)
         catalog = Content.fetch_catalog(self.client, remote)
         assert(type(catalog) == "table" and #catalog > 0, _("No chapter catalog available."))
         store:put(book_id, "meta", "catalog", catalog)

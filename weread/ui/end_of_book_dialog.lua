@@ -24,7 +24,7 @@ local M = {}
 --   opts.enable_* : boolean — whether each context-dependent action is enabled
 --   opts.annotations_visible : boolean — current annotation visibility state
 --   callbacks             : { on_bookshelf, on_search, on_chapter_list, on_next,
---                             on_book_details, on_read_stats, on_sync_progress,
+--                             on_book_details, on_sync_progress,
 --                             on_toggle_annotations, on_close_book }
 -- Returns the dialog widget instance.
 function M.show(opts, callbacks)
@@ -66,16 +66,12 @@ function M.show(opts, callbacks)
         table.insert(buttons, nav_row)
     end
 
-    -- Row 2: book details / reading statistics
+    -- Row 2: book details.
     table.insert(buttons, {
         {
             text = _("Book details"),
             enabled = opts.enable_book_details ~= false,
             callback = function() dismiss_then(callbacks.on_book_details) end,
-        },
-        {
-            text = _("Reading statistics"),
-            callback = function() dismiss_then(callbacks.on_read_stats) end,
         },
     })
 

@@ -22,7 +22,7 @@ local function test(name, fn)
     fn()
 end
 
-test("normalizes nested gateway reviews", function()
+test("normalizes nested native review responses", function()
     local result = BookReviews.normalize_list({
         reviewsCnt = 12,
         reviewsHasMore = 1,

@@ -268,31 +268,6 @@ expect(#continuous_view._item_rows == #books
         and continuous_view._page_buttons == nil,
     "continuous bookshelf did not retain the complete result list")
 
-local accounts = {}
-for index = 1, 12 do
-    accounts[index] = { bookId = "mp-" .. tostring(index), title = "Account " .. tostring(index) }
-end
-local account_view = LibraryView.show({
-    mode = "public_account", books = books, accounts = accounts,
-    paged = true, page = 2, page_size = 10,
-}, {})
-expect(account_view.page_count == 2 and #account_view._item_rows == 2
-        and account_view._item_rows[1].text == "Account 11",
-    "public-account pagination used the wrong source or slice")
-
-local account_cover_paths = { [accounts[1]] = "/covers/account.jpg" }
-local account_cover_view = LibraryView.show({
-    mode = "public_account", books = books, accounts = accounts,
-    paged = true, page = 1, page_size = 6,
-    cover_mode = true, cover_columns = 3, cover_paths = account_cover_paths,
-}, {})
-expect(account_cover_view.page_count == 2 and #account_cover_view._item_rows == 6
-        and #account_cover_view._focus_item_rows == 2
-        and account_cover_view._item_rows[1]._has_cover == true
-        and account_cover_view._item_rows[1]._cover_fit == "contain"
-        and account_cover_view._item_rows[1]._has_download_status == false,
-    "public-account cover mode did not reuse the book-cover grid safely")
-
 local large_shelf = {}
 for index = 1, 1000 do
     large_shelf[index] = { bookId = tostring(index), title = "Book " .. tostring(index) }
@@ -416,17 +391,6 @@ expect(scaled_view._item_rows[1]._has_cover == true,
 expect(scale_calls > 0 and lua_scale_calls == 0,
     "cover preparation used the per-pixel Lua scaler: lua=" .. lua_scale_calls
         .. " c=" .. scale_calls)
-local mp_accounts = { { bookId = "MP_WXS_scaled", title = "Account",
-    cover = "http://wx.qlogo.cn/avatar" } }
-local mp_scale_before = scale_calls
-LibraryView.show({
-    mode = "public_account", books = {}, accounts = mp_accounts,
-    paged = true, page = 1, page_size = 6,
-    cover_mode = true, cover_columns = 3,
-    cover_paths = { [mp_accounts[1]] = "/covers/mp.jpg" },
-}, {})
-expect(scale_calls > mp_scale_before,
-    "contained avatar preparation used the per-pixel Lua scaler")
 expect(cover_view._item_rows[2]._placeholder_centered == true,
     "coverless card did not center its placeholder text")
 expect(cover_view._item_rows[1].width == 200
@@ -455,7 +419,7 @@ ok, error_message = pcall(function()
     }, {})
 end)
 expect(ok, "empty review list failed to build: " .. tostring(error_message))
-expect(#shown == 14, "all bookshelf and empty-state views should be shown")
+expect(#shown == 11, "all current bookshelf and empty-state views should be shown")
 
 expect(#paged_view._header_buttons == 5 and paged_view._tab_buttons == nil
         and paged_view._action_primary == nil, "shelf retained its permanent tabs or toolbars")
@@ -488,14 +452,13 @@ local function dialog_module()
 end
 package.preload["ui/widget/menu"] = dialog_module
 package.preload["ui/widget/buttondialog"] = dialog_module
-local chosen_group, changed_type, display_key, display_value
+local chosen_group, display_key, display_value
 local selector_view = LibraryView.show({
     mode = "books", books = books, accounts = {}, paged = true,
     group_key = "archive:1", group_label = "A long group name", total_books = 100,
     groups = { { key = "archive:1", label = "A long group name", books = books } },
 }, {
     on_select_group = function(key) chosen_group = key end,
-    on_switch = function(mode) changed_type = mode end,
     on_display_change = function(key, value) display_key, display_value = key, value end,
 })
 selector_view._header_buttons[2].callback()
@@ -503,19 +466,16 @@ local selector = shown[#shown]
 expect(selector.items_per_page == 2 and #selector.item_table == 2 and selector.height < 400,
     "group chooser did not reuse a paginated native menu")
 expect(selector.custom_title_bar[1].height == selector_view._header_buttons[2].height,
-    "content switcher is shorter than the bookshelf header")
+    "group chooser title is shorter than the bookshelf header")
 expect(selector.page_info.handleEvent and not selector.page_info:handleEvent({})
         and selector.item_dimen.h * selector.items_per_page == selector.available_height,
     "single-page picker retained footer controls or wasted row space")
 selector.layout, selector.selected = { { {} } }, { y = 1 }
 selector:mergeTitleBarIntoLayout()
-expect(selector.selected.y == 3 and selector.layout[1][1] == selector.custom_title_bar[1]
-        and selector.layout[2][1] == selector.custom_title_bar[2],
-    "content tabs are not reachable using vertical five-way navigation")
+expect(selector.selected.y == 2 and selector.layout[1][1] == selector.custom_title_bar[1],
+    "group chooser title is not reachable using vertical five-way navigation")
 selector.item_table[2].callback()
 expect(chosen_group == "archive:1", "group picker used position instead of stable server ID")
-selector.custom_title_bar[2].callback()
-expect(changed_type == "public_account", "content picker lost the public-account action")
 selector_view:showOptions()
 local options_dialog = shown[#shown]
 options_dialog.buttons[3][2].callback()

@@ -23,7 +23,6 @@ local callbacks = {
     on_bookshelf = function() end,
     on_search = function() end,
     on_book_details = function() end,
-    on_read_stats = function() end,
     on_sync_progress = function() end,
     on_toggle_annotations = function() end,
     on_close_book = function() end,

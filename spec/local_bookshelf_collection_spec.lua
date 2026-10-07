@@ -101,9 +101,6 @@ package.preload["weread.lib.protocol"] = function()
         reader_url = function(book_id)
             return "https://reader/" .. tostring(book_id)
         end,
-        is_mp_book = function(book_id)
-            return tostring(book_id or ""):sub(1, 7) == "MP_WXS_"
-        end,
     }
 end
 
@@ -332,22 +329,6 @@ do
     eq(coll_removes[1] and coll_removes[1].no_write, true, "clearAllCache deferred write")
     eq(coll_writes >= 1 and true or false, true, "clearAllCache batch write")
     eq(#annotation_clears, 2, "clearAllCache removes every annotation database")
-end
-
--- clearAllMPCache only removes MP books.
-coll_adds, coll_removes, coll_writes = {}, {}, 0
-do
-    local host = make_cache_host({
-        normal = {
-            cached_file = "/cache/n/full.epub",
-            cached_full_book = "/cache/n/full.epub",
-        },
-        ["MP_WXS_1"] = { cached_file = "/cache/mp/article.epub" },
-    })
-    host:clearAllMPCache()
-    eq(#coll_removes, 1, "clearAllMPCache removes only MP")
-    eq(coll_removes[1] and coll_removes[1].path, "/cache/mp/article.epub",
-        "clearAllMPCache path")
 end
 
 rawset(os, "execute", real_os_execute)

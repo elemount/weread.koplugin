@@ -20,7 +20,7 @@ package.preload["weread.lib.logger"] = function()
     return { info = function() end, warn = function() end, err = function() end }
 end
 package.preload["weread.lib.protocol"] = function()
-    return { is_mp_book = function() return false end }
+    return {}
 end
 package.preload["weread.lib.plugin_util"] = function()
     return {
@@ -35,7 +35,7 @@ end
 local fetched_chapters = { { chapterUid = 7, title = "Cached chapter" } }
 package.preload["weread.lib.content"] = function()
     return {
-        ensure_reader_state = function() end,
+        ensure_book_info = function() end,
         fetch_catalog = function() return fetched_chapters end,
         catalog_cache_path = function() return "/cache/42/catalog.json" end,
         save_catalog_cache = function()

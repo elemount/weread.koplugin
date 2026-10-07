@@ -45,7 +45,7 @@ end
 local function annotation_requests()
     local count = 0
     for _, row in ipairs(control().requests) do
-        if row.api == '/book/underlines' or row.api == '/book/readreviews' then count = count + 1 end
+        if row.path == '/book/underlines' or row.path == '/book/readreviews' then count = count + 1 end
     end
     return count
 end
@@ -75,7 +75,6 @@ end
 local Content = require('weread.lib.content')
 local client = require('weread.lib.client'):new(settings)
 local book = client:get_book_info('900001')
-Content.ensure_reader_state(client, book)
 local chapters = Content.fetch_catalog(client, book)
 Content.save_catalog_cache(client, settings, book, chapters)
 local path = Content.fetch_chapters_epub(client, settings, book, chapters, { suffix = 'annotation-test' })

@@ -10,15 +10,6 @@ package.preload["logger"] = function()
     return { info = function() end, warn = function() end, err = function() end }
 end
 package.preload["weread.lib.crypto"] = function() return {} end
-package.preload["weread.lib.reader_state"] = function() return {} end
-package.preload["weread.lib.protocol"] = function()
-    return {
-        reader_url = function(book_id, chapter_uid)
-            return "https://weread.qq.com/reader/" .. tostring(book_id)
-                .. "/" .. tostring(chapter_uid or "")
-        end,
-    }
-end
 package.preload["weread.lib.thoughts"] = function() return {} end
 
 local archive_calls = {}
@@ -63,6 +54,10 @@ package.preload["ffi/archiver"] = function()
         archive_calls[#archive_calls + 1] = {
             kind = "memory", name = name, bytes = #data, data = data,
         }
+        if archive_should_fail then
+            self.err = "injected archive failure"
+            return false
+        end
         return true
     end
     function Writer:addPath(name, path, recursive)
@@ -121,73 +116,7 @@ workspace.asset_dir = workspace.path .. "/images"
 assert(os.execute("mkdir -p " .. string.format("%q", workspace.incoming_dir)))
 assert(os.execute("mkdir -p " .. string.format("%q", workspace.asset_dir)))
 
-local function tar_header(name, size)
-    local header = name .. string.rep("\0", 100 - #name)
-    header = header .. string.rep("0", 24)
-    local octal = string.format("%011o\0", size)
-    header = header .. octal
-    header = header .. string.rep("0", 20)
-    header = header .. "0"
-    return header .. string.rep("\0", 512 - #header)
-end
-
-local image_count = 24
-local image_size = 256 * 1024
-local fake_client = {}
-function fake_client:download_to_file(_url, path)
-    local file = assert(io.open(path, "wb"))
-    for index = 1, image_count do
-        local name = string.format("image-%03d.jpg", index)
-        file:write(tar_header(name, image_size))
-        file:write("\255\216\255", string.rep("x", image_size - 3))
-        local padding = (512 - image_size % 512) % 512
-        if padding > 0 then file:write(string.rep("\0", padding)) end
-    end
-    file:write(string.rep("\0", 1024))
-    file:close()
-    return path
-end
-
-collectgarbage("collect")
-local before_kb = collectgarbage("count")
-local assets, src_map = Content.download_chapter_assets_to_files(
-    fake_client, { book_id = "book" },
-    { chapterUid = 7, tar = "https://example.test/chapter.tar" },
-    {}, workspace)
-collectgarbage("collect")
-local after_kb = collectgarbage("count")
-expect(#assets == image_count, "not all TAR images were extracted")
-expect(assets[1].data == nil and type(assets[1].path) == "string",
-    "extracted image remained resident in an asset data field")
-expect(src_map["image-001.jpg"] == "../images/image-001.jpg",
-    "file-backed image map was wrong")
-expect(after_kb - before_kb < 1024,
-    "file-backed extraction retained resource-sized Lua memory")
-local first = assert(io.open(assets[1].path, "rb"))
-expect(first:read(3) == "\255\216\255", "extracted image bytes were corrupted")
-first:close()
-expect(io.open(workspace.incoming_dir .. "/chapter-7.tar", "rb") == nil,
-    "source TAR was not removed after extraction")
-
-function fake_client:download_to_file(_url, path)
-    local file = assert(io.open(path, "wb"))
-    file:write("PK\003\004fake converted-book ZIP")
-    file:close()
-    return path
-end
-local zip_assets, zip_src_map = Content.download_chapter_assets_to_files(
-    fake_client, { book_id = "converted-book" },
-    { chapterUid = 1, tar = "https://example.test/resources" },
-    {}, workspace)
-expect(#zip_assets == 1, "ZIP image resources were not extracted")
-local zip_image = assert(io.open(zip_assets[1].path, "rb"))
-expect(zip_image:read(3) == "\255\216\255",
-    "ZIP image was not staged on disk")
-zip_image:close()
-expect(zip_src_map["page-1.jpeg"] == "../" .. zip_assets[1].href,
-    "ZIP image map was wrong")
-expect(io.open(workspace.incoming_dir .. "/chapter-1.tar", "rb") == nil,
-    "source ZIP was not removed after extraction")
+local assets = {}
 
 local settings = {
     cache_dir = root,
@@ -213,8 +142,8 @@ for _, call in ipairs(archive_calls) do
         end
     end
 end
-expect(used_path and path_calls == 1,
-    "EPUB writer did not stream the staged image directory with one addPath")
+expect(not used_path and path_calls == 0,
+    "EPUB writer streamed an image directory with no native chapter assets")
 expect(io.open(output .. ".part", "rb") == nil,
     "successful EPUB build left a partial archive")
 local opf

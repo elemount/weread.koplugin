@@ -36,7 +36,7 @@ package.preload["weread.ui.thought_popup"] = function()
     return { closeVisible = function() end }
 end
 package.preload["weread.lib.protocol"] = function()
-    return { is_mp_book = function(book_id) return book_id == "mp-book" end }
+    return {}
 end
 package.preload["weread.lib.plugin_util"] = function()
     return {
@@ -128,12 +128,6 @@ expect(sync_action and sync_action.event == "WeReadSyncProgress"
         and sync_action.category == "none"
         and sync_action.reader == true and sync_action.general ~= true,
     "sync gesture reuses the quick-menu event as a reader-only action")
-local report_action = registered.weread_read_report_status
-expect(report_action and report_action.event == "ShowWeReadReportStatus"
-        and report_action.title == "WeRead · Reading time report status"
-        and report_action.category == "none"
-        and report_action.reader == true and report_action.general ~= true,
-    "reading report status is registered as a reader-only action")
 local quick_action = registered.weread_quick_menu
 expect(quick_action ~= nil, "quick menu dispatcher action is registered")
 expect(quick_action and quick_action.event == "ShowWeReadQuickMenu",
@@ -176,10 +170,6 @@ local general_actions = {
     weread_local_bookshelf = {
         event = "ShowWeReadLocalBookshelf",
         title = "WeRead · Local bookshelf",
-    },
-    weread_reading_statistics = {
-        event = "ShowWeReadReadingStatistics",
-        title = "WeRead · Reading statistics",
     },
     weread_search = {
         event = "ShowWeReadSearch",
@@ -268,7 +258,7 @@ local main_items = host:getMainMenuItems()
 expect(main_items[#main_items] and main_items[#main_items].text == "Settings",
     "about is no longer present in the outer menu")
 for _, item in ipairs(main_items) do
-    if item.text == "Search" or item.text == "Reading statistics" then
+    if item.text == "Search" then
         expect(item.keep_menu_open == true,
             item.text .. " keeps the main menu open while its dialog is shown")
     end
@@ -314,12 +304,6 @@ expect(cache.show_annotations == false and annotation_menu_updates == 1
         and visibility_item.check_callback_updates_menu == true,
     "annotation toggle did not refresh the kept-open main menu")
 
-host.detectWeReadBook = function() return "mp-book" end
-local mp_reader_items = host:getMainMenuItems()
-expect(not menu_has(mp_reader_items, "Sync progress now")
-        and menu_has(mp_reader_items, "Book details")
-        and menu_has(mp_reader_items, "Underlines and thoughts management"),
-    "public-account menu exposed unsupported progress or local-book actions")
 local download_settings
 local cache_management
 for _, item in ipairs(settings_items) do

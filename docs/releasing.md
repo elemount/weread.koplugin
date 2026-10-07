@@ -35,18 +35,21 @@ bash scripts/package_release.sh
 The default output is `dist/weread.koplugin-vX.Y.Z.zip`, where `X.Y.Z` comes
 from `_meta.lua`. A custom output path may be passed as the first argument.
 
-## Manual GitHub package / 手动打包
+## Manual GitHub Release / 手动发布
 
-Open **Actions → Release → Run workflow**. The optional `package_label` input
-controls the filename:
+Open **Actions → Release → Run workflow**, select the `main` branch, and start
+the workflow. It reads the version from `_meta.lua` and publishes
+`vX.Y.Z` as a GitHub Release:
 
-- leave it empty to use the first eight characters of the selected commit ID;
-- enter a label such as `preview-1` to create
-  `weread.koplugin-preview-1.zip`.
+- normal CI must have passed for that commit;
+- the workflow builds `weread.koplugin-vX.Y.Z.zip` and its SHA-256 checksum;
+- both files are attached to the release and retained as workflow artifacts
+  for 14 days;
+- the matching changelog section is included in the release notes.
 
-A manual run validates the current version, builds the zip and SHA-256
-checksum, and uploads them as two separate workflow artifacts retained for 14
-days. It does not create a tag or GitHub Release.
+The version tag must not already exist. Bump `_meta.lua` and `main.lua`, add the
+matching changelog section, and commit the release candidate before starting a
+manual run. Runs from other branches are rejected.
 
 ## Automatic release / 自动发布
 
@@ -60,10 +63,12 @@ To publish a release:
    to `main`.
 4. The normal `CI` and pinned KOReader integration workflows run.
 5. After the KOReader integration succeeds, the `Release` workflow confirms
-   that normal CI also passed for the same commit.
-6. If `vX.Y.Z` does not already exist, it creates the package, checksum, tag,
-   and GitHub Release.
+   that normal CI also passed for the same commit, then creates the package,
+   checksum, tag, and GitHub Release if `vX.Y.Z` does not already exist.
 
+The automatic path waits for both CI workflows. The manual path is useful when
+you need to publish a validated `main` commit before or without the scheduled
+integration workflow completing; it still requires normal CI to have passed.
 Pushes that keep an existing version do not publish anything. Reusing an
 existing release tag fails deliberately; bump to a new version instead.
 Automatic packages use the versioned filename

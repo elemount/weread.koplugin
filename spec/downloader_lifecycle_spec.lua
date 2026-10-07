@@ -53,7 +53,7 @@ package.preload["ffi/util"] = function()
 end
 package.preload["weread.lib.content"] = function()
     return {
-        ensure_reader_state = function() end,
+        ensure_book_info = function() end,
         fetch_single_chapter_source = function()
             error("injected transient timeout")
         end,
@@ -83,7 +83,6 @@ end
 package.preload["weread.lib.protocol"] = function()
     return {
         normalize_cover_url = function(value) return value end,
-        reader_url = function(book_id) return "https://reader/" .. tostring(book_id) end,
     }
 end
 
@@ -195,7 +194,7 @@ downloader.run_online_task = function(_label, callback)
     pending_init = callback
     return true
 end
-Content.ensure_reader_state = function()
+Content.ensure_book_info = function()
     reader_calls = reader_calls + 1
     expect(dialog.visible and dialog.title == "Connecting to WeRead...",
         "reader session request ran without a visible stage")
@@ -235,7 +234,7 @@ pending_init()
 expect(reader_calls == 1 and not dialog.visible and downloader._active_job == nil,
     "cancel before initialization still fetched or reopened the dialog")
 
-Content.ensure_reader_state = function() error("injected reader failure") end
+Content.ensure_book_info = function() error("injected book-info failure") end
 expect(start_selected(), "reader failure setup failed")
 pending_init()
 expect(not dialog.visible and downloader._active_job == nil,
@@ -334,7 +333,7 @@ trapper:wrap(function() downloader:_step(transferred) end)
 resumed({ xhtml = "<p>source</p>", state = { css = "body{}" },
     book = { book_id = "book", psvts = "fresh" } })
 expect(child_pending and transferred.state.css == "body{}"
-    and transferred.book.psvts == "fresh" and transferred.book.token == nil,
+    and transferred.book.psvts == nil and transferred.book.token == nil,
     "source result lost CSS/session changes or retained stale credentials")
 resumed({ xhtml = "<p>final</p>", assets = {}, state = { css = "body{}" } })
 expect(transferred.bodies["1"] == "<p>final</p>" and transferred.index == 2

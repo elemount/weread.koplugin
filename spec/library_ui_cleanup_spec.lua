@@ -37,7 +37,7 @@ package.preload["weread.lib.content"] = function()
     return { load_catalog_cache = function() return nil end }
 end
 package.preload["weread.lib.protocol"] = function()
-    return { is_mp_book = function() return false end }
+    return {}
 end
 package.preload["weread.lib.plugin_util"] = function()
     return {

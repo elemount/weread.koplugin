@@ -3,9 +3,9 @@ package.path = "./?.lua;" .. package.path
 local calls = {}
 package.preload["weread.lib.content"] = function()
     return {
-        ensure_reader_state = function(_client, book)
-            calls[#calls + 1] = "reader"
-            book.reader_url = "https://reader/book"
+        ensure_book_info = function(_client, book)
+            calls[#calls + 1] = "book_info"
+            book.book_id = book.book_id or "book"
         end,
         create_download_workspace = function()
             calls[#calls + 1] = "workspace"
@@ -14,7 +14,7 @@ package.preload["weread.lib.content"] = function()
         end,
         fetch_single_chapter_source = function(_client, settings)
             calls[#calls + 1] = "source"
-            settings:update_auth({ wr_ticket = "renewed" })
+            settings:update_auth({ auth = { vid = "900000", access_token = "native-access" } })
             return "<p>body</p>"
         end,
         finalize_single_chapter_content = function()
@@ -51,8 +51,7 @@ end
 local flushes = 0
 local values = {
     cache = { download_book_images = true, book_footnotes_in_popup = true },
-    cookies = {}, wr_ticket = "old",
-    wr_wrpa = "",
+    auth = { vid = "900000", access_token = "old-access" },
 }
 local settings = {
     get = function(_self, key, default)
@@ -62,7 +61,7 @@ local settings = {
     flush = function() flushes = flushes + 1 end,
 }
 settings.update_auth = function(self, credentials, options)
-    if credentials.wr_ticket then self:set("wr_ticket", credentials.wr_ticket) end
+    if credentials.auth then self:set("auth", credentials.auth) end
     if not options or options.flush ~= false then self:flush() end
 end
 
@@ -79,10 +78,11 @@ local result = Worker.run(settings, {}, { book_id = "book" },
 assert(result.path == "/tmp/book-chapter.epub")
 assert(result.chapter_uid == "2" and result.cache_dir == "/tmp/cache/book")
 assert(result.annotation_document and result.annotation_document.clean)
-assert(result.auth and result.auth.wr_ticket == "renewed")
+assert(result.auth and result.auth.auth.vid == "900000"
+    and result.auth.auth.access_token == "native-access")
 assert(flushes == 0, "child worker must not flush parent LuaSettings")
 assert(table.concat(calls, ",")
-    == "reader,workspace,source,images,epub,cleanup")
+    == "book_info,workspace,source,images,epub,cleanup")
 assert(table.concat(progress, ",")
     == "reader,source,images,footnotes,epub")
 

@@ -2,11 +2,6 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      package_label:
-        description: Optional package label; defaults to the first 8 characters of the commit ID
-        required: false
-        type: string
   workflow_run:
     workflows:
       - KOReader integration
@@ -39,7 +34,7 @@ jobs:
         id: version
         env:
           EVENT_NAME: ${{ github.event_name }}
-          MANUAL_LABEL: ${{ inputs.package_label }}
+          TARGET_REF: ${{ github.ref }}
           TARGET_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
@@ -55,36 +50,38 @@ jobs:
             exit 1
           fi
 
-          automatic_release=false
+          should_publish=true
           tag="v$current"
-          package_label="$tag"
           if [[ "$EVENT_NAME" == "workflow_run" ]]; then
-            if ! git rev-parse --verify --quiet "refs/tags/$tag"; then
-              automatic_release=true
+            if git rev-parse --verify --quiet "refs/tags/$tag"; then
+              should_publish=false
             fi
           else
-            package_label="${MANUAL_LABEL:-${TARGET_SHA:0:8}}"
-            if [[ ! "$package_label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$ ]]; then
-              echo "error: package_label must be 1-40 letters, numbers, dots, underscores, or hyphens" >&2
+            if [[ "$TARGET_REF" != "refs/heads/main" ]]; then
+              echo "error: publish from the main branch so the release matches the validated code" >&2
+              exit 1
+            fi
+            if git rev-parse --verify --quiet "refs/tags/$tag"; then
+              echo "error: release tag $tag already exists; bump _meta.lua to a new version" >&2
               exit 1
             fi
           fi
 
           echo "current=$current"
-          echo "automatic_release=$automatic_release"
+          echo "should_publish=$should_publish"
           echo "version=$current" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=weread.koplugin-$package_label" >> "$GITHUB_OUTPUT"
-          echo "archive=dist/weread.koplugin-$package_label.zip" >> "$GITHUB_OUTPUT"
-          echo "automatic_release=$automatic_release" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=weread.koplugin-v$current" >> "$GITHUB_OUTPUT"
+          echo "archive=dist/weread.koplugin-v$current.zip" >> "$GITHUB_OUTPUT"
+          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
           echo "target_sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Explain existing release
-        if: github.event_name == 'workflow_run' && steps.version.outputs.automatic_release != 'true'
+        if: github.event_name == 'workflow_run' && steps.version.outputs.should_publish != 'true'
         run: echo "Tag ${{ steps.version.outputs.tag }} already exists; no package was published."
 
       - name: Verify basic CI passed
-        if: steps.version.outputs.automatic_release == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ steps.version.outputs.target_sha }}
@@ -105,11 +102,11 @@ jobs:
           fi
 
       - name: Build plugin package
-        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.automatic_release == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         run: bash scripts/package_release.sh "${{ steps.version.outputs.archive }}"
 
       - name: Generate checksum
-        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.automatic_release == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         run: |
           archive="${{ steps.version.outputs.archive }}"
           (
@@ -119,7 +116,7 @@ jobs:
           cat "${{ steps.version.outputs.archive }}.sha256"
 
       - name: Verify package contents
-        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.automatic_release == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         run: |
           unzip -l "${{ steps.version.outputs.archive }}"
           test "$(unzip -Z1 "${{ steps.version.outputs.archive }}" | head -n 1)" \
@@ -141,7 +138,7 @@ jobs:
           fi
 
       - name: Upload plugin package artifact
-        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.automatic_release == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.version.outputs.artifact_name }}
@@ -151,7 +148,7 @@ jobs:
           compression-level: 0
 
       - name: Upload checksum artifact
-        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.automatic_release == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.version.outputs.artifact_name }}-checksum
@@ -160,7 +157,7 @@ jobs:
           retention-days: 14
 
       - name: Ensure release tag is new
-        if: steps.version.outputs.automatic_release == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
@@ -170,7 +167,7 @@ jobs:
           fi
 
       - name: Build release notes preface
-        if: steps.version.outputs.automatic_release == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -180,7 +177,7 @@ jobs:
           cat dist/release-preface.md
 
       - name: Create GitHub Release
-        if: steps.version.outputs.automatic_release == 'true'
+        if: steps.version.outputs.should_publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}

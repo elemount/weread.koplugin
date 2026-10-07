@@ -30,7 +30,7 @@ package.preload["weread.lib.logger"] = function()
     }
 end
 package.preload["weread.lib.protocol"] = function()
-    return { is_mp_book = function() return false end }
+    return {}
 end
 package.preload["ui/uimanager"] = function() return {} end
 package.preload["weread.lib.plugin_util"] = function()

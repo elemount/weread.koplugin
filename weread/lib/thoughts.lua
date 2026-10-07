@@ -30,8 +30,8 @@ function Thoughts.fetch_underlines(client, settings, book_id, chapter_uid, force
     if force_enabled ~= true and not Thoughts.is_download_enabled(settings) then
         return true, nil, {}
     end
-    if not settings:is_cookie_configured() then
-        return false, nil, {}, "cookie not configured"
+    if not settings:is_authenticated() then
+        return false, nil, {}, "login credentials not configured"
     end
     local ok, data, err = client:get_chapter_underlines(book_id, chapter_uid)
     if not ok or type(data) ~= "table" then
@@ -73,7 +73,7 @@ function Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
     if not Thoughts.is_download_enabled(settings) then
         return xhtml, ""
     end
-    if not settings:is_cookie_configured() then
+    if not settings:is_authenticated() then
         return xhtml, ""
     end
     if not book_id or not chapter_uid then

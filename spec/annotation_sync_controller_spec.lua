@@ -542,7 +542,7 @@ do
         drain()
     end
     local requested, updates = {}, 0
-    local auth = { cookies = { session = "before" } }
+    local auth = { auth = { vid = "before", access_token = "before-token" } }
     host.settings = { get = function(_self, key, default) return auth[key] or default end,
         update_auth = function() updates = updates + 1 end }
     host.isNetworkConnected = function() return true end
@@ -660,9 +660,9 @@ do
         "resuming refetched the completed chapter")
 
     -- A concurrent login change wins over auth captured by an older worker.
-    returned_auth = { cookies = { session = "old-child" } }
+    returned_auth = { auth = { vid = "old-child", access_token = "old-token" } }
     start("new-login")
-    auth.cookies = { session = "new-login" }
+    auth.auth = { vid = "new-login", access_token = "new-token" }
     complete_child()
     assert(updates == 0)
     returned_auth = nil

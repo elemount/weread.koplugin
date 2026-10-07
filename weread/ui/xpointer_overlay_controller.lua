@@ -157,7 +157,7 @@ function M:bindExternalAnnotationsBook(touchmenu_instance)
                 local keyword = dialog:getInputText()
                 UIManager:close(dialog)
                 self:runOnlineTask(_("Search"), function()
-                    local result = self.client:gateway("/store/search", { keyword = keyword, count = 20 })
+                    local result = self.client:search_books(keyword, 20)
                     local items = {}
                     for _index, book in ipairs(External.normalize_search(result)) do
                         items[#items + 1] = {

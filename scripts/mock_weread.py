@@ -8,7 +8,6 @@ contracts consumed by this plugin, not authentication or the real service.
 from __future__ import annotations
 
 import argparse
-import base64
 from collections import deque
 import hashlib
 import ipaddress
@@ -27,9 +26,9 @@ from urllib.parse import parse_qs, urlsplit
 import zipfile
 import zlib
 
-from fetch_weread_epub import swap_positions, weread_e
-
 REPO = Path(__file__).resolve().parent.parent
+CHAPTER_ARCHIVE = Path(__file__).resolve().parent / "fixtures/native_chapter_mock.zip"
+CHAPTER_ENCRYPT_KEY = "aEUYXo8bFLAX/MUkP9TGuw=="
 BOOK_ID = "900001"
 TITLES = ["启程", "雨中的小站", "山间来信", "海边的夜晚", "重逢", "归途"]
 QUOTE = "窗外的风穿过树梢，带来远处山谷的回声。"
@@ -51,7 +50,7 @@ def chapter_html(uid):
             + "\n".join(paragraphs)
             + '<p>脚注验证<a href="#note1" epub:type="noteref">[1]</a></p>'
               '<aside id="note1" epub:type="footnote"><p>这是自写的原书脚注。</p></aside>'
-              '<p><img src="https://weread.qq.com/mock/illustration.png" alt="合成插图"/></p>'
+              '<p><img src="illustration.png" alt="合成插图"/></p>'
               '</body></html>')
 
 
@@ -59,20 +58,6 @@ def annotation(uid):
     source = chapter_html(uid)
     start = source.index(QUOTE)
     return dict(range=f"{start}-{start + len(QUOTE)}", markText=QUOTE, count=12, metadata=None)
-
-
-def shards(text, count=3):
-    """Inverse of the existing decoder; real Client still checks MD5 and decodes."""
-    encoded = base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
-    chars = list(encoded)
-    positions = swap_positions(encoded)
-    for i in range(0, len(positions), 2):
-        for k in (0, 1):
-            a, b = positions[i] + k, positions[i + 1] + k
-            chars[a], chars[b] = chars[b], chars[a]
-    body = "0" + "".join(chars)
-    parts = [body[len(body) * i // count:len(body) * (i + 1) // count] for i in range(count)]
-    return [hashlib.md5(part.encode()).hexdigest().upper() + part for part in parts]
 
 
 def png():
@@ -118,10 +103,9 @@ class MockServer(ThreadingHTTPServer):
         if url.hostname not in {"weread.qq.com", "i.weread.qq.com"}:
             raise LookupError("host is not implemented")
         query = parse_qs(url.query)
-        api = data.get("api_name", "") if path == "/api/agent/gateway" else ""
         with self.lock:
             control = self.control.copy()
-            matches = not control["match"] or control["match"] in (api or path)
+            matches = not control["match"] or control["match"] in path
             fail = matches and control["times"] != 0
             if fail and control["times"] > 0:
                 self.control["times"] -= 1
@@ -130,72 +114,63 @@ class MockServer(ThreadingHTTPServer):
         if fail:
             return control["status"], dict(errcode=-1, errmsg="Injected mock failure")
 
-        book_id = str(data.get("bookId") or query.get("bookId", [BOOK_ID])[0])
-        if path == "/api/agent/gateway" and method == "POST":
-            if api in {"/book/info", "/book/getprogress", "/review/list", "/book/underlines", "/book/readreviews"}:
-                if "bookId" not in data or not any(b["bookId"] == book_id for b in BOOKS):
-                    raise ValueError("missing or unknown bookId")
-            if api == "/shelf/sync":
-                return 200, dict(books=[] if control["empty_shelf"] else BOOKS, archive=[
-                    dict(archiveId=1, name="旅途", bookIds=[b["bookId"] for b in BOOKS[:15]]),
-                    dict(archiveId=2, name="待读", bookIds=[b["bookId"] for b in BOOKS[15:]]),
-                    dict(archiveId=3, name="空分组", bookIds=[])])
-            if api == "/book/info":
-                return 200, next(b for b in BOOKS if b["bookId"] == book_id)
-            if api == "/store/search":
-                keyword = data.get("keyword", "")
-                return 200, dict(results=[dict(books=[dict(bookInfo=b) for b in BOOKS
-                                                      if keyword in b["title"] or keyword in b["author"]])])
-            if api == "/book/getprogress":
-                return 200, self.get_progress(book_id)
-            if api == "/review/list":
-                return 200, dict(reviewsCnt=1, reviewsHasMore=0, reviews=[dict(review=review())])
-            if api in {"/book/underlines", "/book/readreviews"}:
-                uid = int(data["chapterUid"])
-                if not 1 <= uid <= len(CHAPTERS):
-                    raise ValueError("unknown chapterUid")
-                mark = annotation(uid)
-                if api == "/book/underlines":
-                    return 200, dict(chapterUid=uid, underlines=[] if control["empty_annotations"] else [mark])
-                return 200, dict(reviews=[] if control["empty_annotations"] else [
-                    dict(range=item["range"], metadata=None, pageReviews=[dict(review=review(uid))])
-                    for item in data.get("reviews", []) if item["range"] == mark["range"]])
-        if path.startswith("/web/reader/") and method == "GET":
-            encoded = path.rsplit("/", 1)[1].split("k")
-            book = next(b for b in BOOKS if weread_e(b["bookId"]) == encoded[0])
-            chapter = next((c for c in CHAPTERS if len(encoded) > 1 and weread_e(c["chapterUid"]) == encoded[1]), CHAPTERS[0])
-            state = dict(reader=dict(bookInfo=book, psvts="mock-session", pclts="mock-clock",
-                                     currentChapter=chapter, progress=self.get_progress(book["bookId"])))
-            return 200, "<script>window.__INITIAL_STATE__=" + json.dumps(state, ensure_ascii=False) + ";(function(){})();</script>"
-        if path == "/web/book/chapterInfos" and method == "POST":
+        book_id = str(data.get("bookId") or query.get("bookId", [""])[0])
+        if path == "/shelf/sync" and method == "GET":
+            return 200, dict(books=[] if control["empty_shelf"] else BOOKS, archive=[
+                dict(archiveId=1, name="旅途", bookIds=[b["bookId"] for b in BOOKS[:15]]),
+                dict(archiveId=2, name="待读", bookIds=[b["bookId"] for b in BOOKS[15:]]),
+                dict(archiveId=3, name="空分组", bookIds=[])])
+        if path == "/book/info" and method == "GET":
+            if not any(b["bookId"] == book_id for b in BOOKS):
+                raise ValueError("missing or unknown bookId")
+            return 200, next(b for b in BOOKS if b["bookId"] == book_id)
+        if path == "/store/search" and method == "GET":
+            keyword = query.get("keyword", [""])[0]
+            return 200, dict(results=[dict(books=[dict(bookInfo=b) for b in BOOKS
+                                                  if keyword in b["title"] or keyword in b["author"]])])
+        if path == "/book/getProgress" and method == "GET":
+            return 200, self.get_progress(book_id)
+        if path == "/review/list" and method == "GET":
+            if not any(b["bookId"] == book_id for b in BOOKS):
+                raise ValueError("missing or unknown bookId")
+            return 200, dict(reviewsCnt=1, reviewsHasMore=0, reviews=[dict(review=review())])
+        if path == "/book/underlines" and method == "GET":
+            uid = int(query.get("chapterUid", [0])[0])
+            if not any(b["bookId"] == book_id for b in BOOKS) or not 1 <= uid <= len(CHAPTERS):
+                raise ValueError("missing or unknown bookId/chapterUid")
+            mark = annotation(uid)
+            return 200, dict(chapterUid=uid,
+                             underlines=[] if control["empty_annotations"] else [mark])
+        if path == "/book/readreviews" and method == "POST":
+            uid = int(data.get("chapterUid", 0))
+            if not any(b["bookId"] == book_id for b in BOOKS) or not 1 <= uid <= len(CHAPTERS):
+                raise ValueError("missing or unknown bookId/chapterUid")
+            mark = annotation(uid)
+            return 200, dict(reviews=[] if control["empty_annotations"] else [
+                dict(range=item["range"], metadata=None, pageReviews=[dict(review=review(uid))])
+                for item in data.get("reviews", []) if item["range"] == mark["range"]])
+        if path == "/book/chapterInfos" and method == "POST":
             if not isinstance(data.get("bookIds"), list) or not data["bookIds"] or any(
                 not any(b["bookId"] == str(book_id) for b in BOOKS) for book_id in data["bookIds"]
             ):
                 raise ValueError("missing or unknown bookIds")
             return 200, dict(data=[dict(bookId=str(b), updated=CHAPTERS) for b in data["bookIds"]])
-        if path.startswith("/web/book/chapter/") and method == "POST":
-            if not any(weread_e(b["bookId"]) == data.get("b") for b in BOOKS):
-                raise ValueError("unknown encoded book")
-            uid = next(c["chapterUid"] for c in CHAPTERS if weread_e(c["chapterUid"]) == data["c"])
-            part = path.rsplit("/", 1)[1]
-            if part == "e_2":
-                return 200, shards("p { line-height: 1.5; } img { max-width: 100%; }", 1)[0]
-            if part in {"e_0", "e_1", "e_3"}:
-                return 200, shards(chapter_html(uid))[["e_0", "e_1", "e_3"].index(part)]
-        if path == "/web/review/single" and method == "GET":
-            return 200, dict(review=review(), comments=[
+        if path == "/book/chapterdownload" and method == "GET":
+            if not any(b["bookId"] == book_id for b in BOOKS):
+                raise ValueError("missing or unknown bookId")
+            try:
+                chapter_uid = int(query.get("chapters", [0])[0])
+            except ValueError as exc:
+                raise ValueError("invalid chapter UID") from exc
+            if not 1 <= chapter_uid <= len(CHAPTERS):
+                raise ValueError("unknown chapter UID")
+            return 200, CHAPTER_ARCHIVE.read_bytes(), {"EncryptKey": CHAPTER_ENCRYPT_KEY}
+        if path == "/review/single" and method == "GET":
+            return 200, dict(reviewId=query.get("reviewId", ["mock-review-1"])[0],
+                review=review(), comments=[
                 dict(commentId=f"mock-comment-{i}", content=f"合成回复 {i}", author={"nick": "测试读者"}, createTime=1700000000)
-                for i in range(1, 3)], commentsHasMore=0)
-        if path == "/web/book/getProgress" and method == "GET":
-            return 200, self.get_progress(book_id)
-        if path == "/web/book/read" and method == "POST":
-            book_id = next(b["bookId"] for b in BOOKS if weread_e(b["bookId"]) == data["b"])
-            uid = next(c["chapterUid"] for c in CHAPTERS if weread_e(c["chapterUid"]) == data["c"])
-            with self.lock:
-                self.progress[book_id] = dict(chapterUid=uid, chapterIdx=data["ci"],
-                                              chapterOffset=data["co"], progress=data["pr"], summary=data.get("sm", ""))
-            return 200, dict(succ=1)
-        if path in {"/mock/cover.png", "/mock/illustration.png"} and method == "GET":
+                for i in range(1, 3)], commentsHasMore=0, commentsCount=2)
+        if path == "/mock/cover.png" and method == "GET":
             return 200, png()
         raise LookupError("route is not implemented")
 
@@ -218,6 +193,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_request(self):
         target = self.path
         data = {}
+        response_headers = {}
         try:
             size = int(self.headers.get("Content-Length", 0))
             if not 0 <= size <= 1024 * 1024:
@@ -239,8 +215,10 @@ class Handler(BaseHTTPRequestHandler):
                 if path.path == "/__proxy":
                     target = parse_qs(path.query)["url"][0]
                 else:
-                    target = "https://weread.qq.com" + self.path
-                status, result = self.server.route(self.command, target, data)
+                    target = "https://i.weread.qq.com" + self.path
+                routed = self.server.route(self.command, target, data)
+                status, result = routed[:2]
+                response_headers = routed[2] if len(routed) > 2 else {}
         except (ValueError, KeyError, TypeError, StopIteration) as exc:
             status, result = 400, dict(errcode=-1, errmsg="Invalid mock request: " + str(exc))
         except LookupError as exc:
@@ -250,10 +228,12 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             parsed = urlsplit("")
         self.server.record(dict(method=self.command, host=parsed.hostname, path=parsed.path,
-                                api=data.get("api_name"), book=data.get("bookId"), chapter=data.get("chapterUid"),
-                                encoded_chapter=data.get("c"), status=status))
+                                book=data.get("bookId") or parse_qs(parsed.query).get("bookId", [None])[0],
+                                chapter=data.get("chapterUid") or parse_qs(parsed.query).get("chapters", [None])[0],
+                                status=status))
         if isinstance(result, bytes):
-            content_type, body = "image/png", result
+            content_type = "image/png" if parsed.path.endswith(".png") else "application/octet-stream"
+            body = result
         elif isinstance(result, str):
             content_type, body = "text/plain; charset=utf-8", result.encode()
         else:
@@ -261,6 +241,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for name, value in response_headers.items():
+            self.send_header(name, str(value))
         self.end_headers()
         try:
             self.wfile.write(body)

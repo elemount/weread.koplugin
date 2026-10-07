@@ -53,7 +53,6 @@ local function fixture(remote, options)
     local values = {
         sync = {
             pull_on_open = true,
-            upload_on_close = true,
             ask_on_conflict = true,
         },
         books = { book = book },
@@ -66,8 +65,7 @@ local function fixture(remote, options)
             values[key] = value
         end,
         flush = function() end,
-        is_api_configured = function() return true end,
-        is_cookie_configured = function() return true end,
+        is_authenticated = function() return true end,
     }
     local queue = {}
     local scheduler = {
@@ -76,15 +74,11 @@ local function fixture(remote, options)
         end,
     }
     local choices = {}
-    local uploads = {}
     local jumps = {}
     local notifications = {}
     local client = {
         get_progress = function()
             return { book = remote }
-        end,
-        get_web_progress = function()
-            return remote
         end,
     }
     local sync = ProgressSync:new{
@@ -102,11 +96,6 @@ local function fixture(remote, options)
         run_online = options.run_online or function(_kind, callback)
             callback()
             return true
-        end,
-        upload_position = function(_book_id, position, elapsed)
-            uploads[#uploads + 1] = position
-            eq(elapsed, 0, "progress upload has zero reading time")
-            return true, { accepted = true }
         end,
         goto_fraction = function(fraction)
             jumps[#jumps + 1] = fraction
@@ -142,7 +131,6 @@ local function fixture(remote, options)
         document = document,
         values = values,
         choices = choices,
-        uploads = uploads,
         jumps = jumps,
         notifications = notifications,
         queue = queue,
@@ -199,7 +187,7 @@ test("page turns reuse word counts and document changes rebuild them", function(
     eq(word_reads, 5006, "reopen rebuilds catalog")
 end)
 
-test("matching open progress verifies the reporting gate", function()
+test("matching open progress verifies the current position", function()
     local f = fixture({
         bookId = "book",
         progress = 25,
@@ -212,9 +200,7 @@ test("matching open progress verifies the reporting gate", function()
     f.drain()
     eq(f.sync:status().verified, true, "session verified")
     eq(#f.choices, 0, "no conflict dialog")
-    local position, reason, applies = f.sync:position_for_report("book")
-    eq(applies, true, "provider applies")
-    eq(reason, nil, "no gate reason")
+    local position = f.sync:status().local_position
     eq(position.chapter_uid, 22, "live chapter")
     eq(position.chapter_offset, 150, "live offset")
 end)
@@ -234,7 +220,7 @@ test("nearby progress within two percent is treated as aligned", function()
     eq(#f.choices, 0, "nearby position does not prompt")
 end)
 
-test("unresolved conflict blocks reports and local choice uploads", function()
+test("unresolved conflict waits for a local or remote choice", function()
     local f = fixture({
         bookId = "book",
         progress = 50,
@@ -246,17 +232,14 @@ test("unresolved conflict blocks reports and local choice uploads", function()
     f.sync:on_reader_ready()
     f.drain()
     eq(#f.choices, 1, "conflict dialog requested")
-    local position, reason, applies = f.sync:position_for_report("book")
-    eq(position, nil, "position withheld")
-    eq(reason, "progress_unverified", "gate reason")
-    eq(applies, true, "provider applies")
+    eq(f.sync:status().verified, false, "unresolved position is unverified")
     f.choices[1].keep_local()
     eq(f.sync:status().verified, true, "local choice verifies")
-    eq(#f.uploads, 1, "local choice uploads immediately")
-    eq(f.uploads[1].chapter_offset, 150, "uploaded immutable position")
+    eq(f.sync:status().local_position.chapter_offset, 150,
+        "local choice keeps the current position")
 end)
 
-test("page change uploads once on close", function()
+test("page change stays local and closing clears the session", function()
     local f = fixture({
         bookId = "book",
         progress = 25,
@@ -271,14 +254,12 @@ test("page change uploads once on close", function()
     f.sync:on_page_update()
     eq(f.sync:status().dirty, true, "page change marks dirty")
     f.sync:on_close_document()
-    eq(#f.uploads, 1, "close uploads once")
-    eq(f.uploads[1].percent, 50, "close uploads current percent")
-    eq(f.uploads[1].chapter_uid, 33, "close uploads current chapter")
+    eq(f.sync:status().local_position, nil, "close releases the live position")
     eq(f.values.books.book.pending_upload_position, nil,
-        "successful upload clears pending snapshot")
+        "retired upload state is not persisted")
 end)
 
-test("remote choice jumps and verifies before reporting", function()
+test("remote choice jumps and records the applied position", function()
     local f = fixture({
         bookId = "book",
         progress = 50,
@@ -294,42 +275,11 @@ test("remote choice jumps and verifies before reporting", function()
     eq(#f.jumps, 1, "one jump")
     eq(f.jumps[1], 0.5, "jump fraction")
     eq(f.sync:status().verified, true, "remote choice verifies")
-    local position = f.sync:position_for_report("book")
+    local position = f.sync:status().local_position
     eq(position.percent, 50, "report sees jumped position")
 end)
 
-test("busy read report is retried with the immutable snapshot", function()
-    local f = fixture({
-        bookId = "book",
-        progress = 50,
-        chapterUid = 33,
-        chapterIdx = 3,
-        chapterOffset = 100,
-        updateTime = 10,
-    })
-    local attempts = 0
-    local uploaded
-    f.sync.upload_position = function(_book_id, position)
-        attempts = attempts + 1
-        if attempts == 1 then
-            return false, { error = "busy", error_kind = "busy" }
-        end
-        uploaded = position
-        return true, { accepted = true }
-    end
-    f.sync:on_reader_ready()
-    f.drain()
-    f.choices[1].keep_local()
-    -- Mutating the live page must not change the already captured retry.
-    f.document.page = 75
-    f.drain()
-    eq(attempts, 2, "busy upload retried")
-    eq(uploaded.percent, 25, "retry uses immutable position")
-    eq(f.values.books.book.pending_upload_position, nil,
-        "retry success clears pending snapshot")
-end)
-
-test("suspend captures movement even without a page event", function()
+test("suspend captures movement locally without uploading", function()
     local f = fixture({
         bookId = "book",
         progress = 25,
@@ -342,8 +292,9 @@ test("suspend captures movement even without a page event", function()
     f.drain()
     f.document.page = 40
     f.sync:on_suspend()
-    eq(#f.uploads, 1, "suspend uploads captured movement")
-    eq(f.uploads[1].percent, 40, "suspend uses current page")
+    eq(f.sync:status().dirty, true, "suspend detects unreported local movement")
+    eq(f.sync.local_position.percent, 25,
+        "suspend retains the verified comparison baseline")
 end)
 
 test("single chapter cloud choice waits for target chapter then jumps", function()
@@ -370,7 +321,7 @@ test("single chapter cloud choice waits for target chapter then jumps", function
     eq(#f.choices, 1, "chapter conflict requested")
     f.choices[1].use_remote()
     eq(requested_chapter.chapterUid, 22, "target chapter requested")
-    eq(f.sync:status().verified, false, "reporting remains gated")
+    eq(f.sync:status().verified, false, "position remains unverified")
     eq(f.sync:status().state, "switching_chapter", "waiting for open")
 
     -- Simulate the downloader opening the requested single-chapter EPUB.
@@ -400,7 +351,7 @@ test("cancelling target chapter download clears the pending jump", function()
     f.choices[1].use_remote()
     eq(f.sync:cancel_pending_jump("cancelled"), true, "pending cancelled")
     eq(f.sync:status().state, "unverified", "returns to safe state")
-    eq(f.sync:status().verified, false, "reporting stays gated")
+    eq(f.sync:status().verified, false, "position stays unverified")
 end)
 
 test("automatic hooks stay disabled when flags are absent", function()
@@ -421,7 +372,8 @@ test("automatic hooks stay disabled when flags are absent", function()
     f.sync.verified = true
     f.sync.dirty = true
     f.sync:on_close_document()
-    eq(#f.uploads, 0, "close does not upload by default")
+    eq(f.values.books.book.pending_upload_position, nil,
+        "close does not persist retired upload state")
 end)
 
 test("manual sync refreshes a missing catalog inside the online task", function()
@@ -561,11 +513,10 @@ test("a queued retry verifies once the link comes back", function()
     eq(f.sync:status().verified, false, "offline open leaves the gate closed")
     online = true
     f.drain()
-    eq(f.sync:status().verified, true, "retry verifies the reporting gate")
+    eq(f.sync:status().verified, true, "retry verifies the current position")
     eq(#f.choices, 0, "no conflict dialog")
     eq(#f.notifications, 0, "automatic retry stays silent")
-    local position, reason = f.sync:position_for_report("book")
-    eq(reason, nil, "no gate reason")
+    local position = f.sync:status().local_position
     eq(position.chapter_uid, 22, "live chapter")
 end)
 

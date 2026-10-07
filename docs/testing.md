@@ -43,12 +43,12 @@ injection and `package.preload` fakes over live network or UI automation.
 
 High-risk areas that require focused coverage:
 
-- HTTP redirect, timeout, cookie, and credential boundaries in
+- HTTP redirect, timeout, and native credential boundaries in
   `weread/lib/client.lua`;
 - settings, authentication schema migrations, and split book storage;
 - UTF-8 content decoding, HTML transformation, underlines, and thoughts;
 - downloader cancellation, retry, completion callbacks, and standby guards;
-- progress mapping and upload/download conflict decisions.
+- native progress mapping, pull retries, and local/remote conflict decisions.
 
 Every top-level spec must exit non-zero on failure and be deterministic when
 run independently.

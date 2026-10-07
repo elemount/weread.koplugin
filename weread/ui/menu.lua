@@ -7,7 +7,6 @@ local InfoMessage = require("ui/widget/infomessage")
 local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
 local ThoughtPopup = require("weread.ui.thought_popup")
-local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
@@ -37,12 +36,6 @@ function M:onDispatcherRegisterActions()
         title = _("WeRead · Sync progress now"),
         reader = true,
     })
-    Dispatcher:registerAction("weread_read_report_status", {
-        category = "none",
-        event = "ShowWeReadReportStatus",
-        title = _("WeRead · Reading time report status"),
-        reader = true,
-    })
     Dispatcher:registerAction("weread_bookshelf", {
         category = "none",
         event = "ShowWeReadBookshelf",
@@ -53,12 +46,6 @@ function M:onDispatcherRegisterActions()
         category = "none",
         event = "ShowWeReadLocalBookshelf",
         title = _("WeRead · Local bookshelf"),
-        general = true,
-    })
-    Dispatcher:registerAction("weread_reading_statistics", {
-        category = "none",
-        event = "ShowWeReadReadingStatistics",
-        title = _("WeRead · Reading statistics"),
         general = true,
     })
     Dispatcher:registerAction("weread_search", {
@@ -136,22 +123,6 @@ function M:getMainMenuItems()
             end),
         },
         {
-            text = _("Reading time report"),
-            sub_item_table_func = function()
-                if not self:requireLogin(true, true) then
-                    return {}
-                end
-                return self:getReadReportMenuItems()
-            end,
-        },
-        {
-            text = _("Reading statistics"),
-            keep_menu_open = true,
-            callback = self:safeCallback(_("Reading statistics"), function()
-                self:showReadStats()
-            end),
-        },
-        {
             text = _("Settings"),
             sub_item_table_func = function()
                 return self:getSettingsMenuItems()
@@ -163,15 +134,13 @@ function M:getMainMenuItems()
         local book_id = self:detectWeReadBook()
         local reader_items = {}
         if book_id ~= nil then
-            if not WeRead.is_mp_book(book_id) then
-                reader_items[#reader_items + 1] = {
-                    text = _("Sync progress now"),
-                    keep_menu_open = true,
-                    callback = self:safeCallback(_("Sync progress now"), function()
-                        self:onWeReadSyncProgress()
-                    end),
-                }
-            end
+            reader_items[#reader_items + 1] = {
+                text = _("Sync progress now"),
+                keep_menu_open = true,
+                callback = self:safeCallback(_("Sync progress now"), function()
+                    self:onWeReadSyncProgress()
+                end),
+            }
             reader_items[#reader_items + 1] = {
                 text = _("Book details"),
                 keep_menu_open = true,
@@ -226,7 +195,7 @@ function M:getSettingsMenuItems()
                         shelf.view_mode = mode
                         self.settings:set("shelf", shelf)
                         self.settings:flush()
-                        self.shelf_view_pages = { books = 1, public_account = 1 }
+                        self.shelf_view_pages = { books = 1 }
                         if touchmenu_instance then touchmenu_instance:updateItems() end
                     end
                 end
@@ -236,7 +205,7 @@ function M:getSettingsMenuItems()
                         shelf.paginated = paginated
                         self.settings:set("shelf", shelf)
                         self.settings:flush()
-                        self.shelf_view_pages = { books = 1, public_account = 1 }
+                        self.shelf_view_pages = { books = 1 }
                         if touchmenu_instance then touchmenu_instance:updateItems() end
                     end
                 end
@@ -342,25 +311,6 @@ function M:getSettingsMenuItems()
                                 end
                             end),
                      },
-                    {
-                        text = _("Upload progress on close"),
-                        keep_menu_open = true,
-                        check_callback_updates_menu = true,
-                        checked_func = function()
-                            return self.settings:get("sync").upload_on_close == true
-                        end,
-                        callback = self:safeCallback(_("Upload progress on close"),
-                            function(touchmenu_instance)
-                                local sync = self.settings:get("sync")
-                                sync.upload_on_close =
-                                    not (sync.upload_on_close == true)
-                                self.settings:set("sync", sync)
-                                self.settings:flush()
-                                if touchmenu_instance then
-                                    touchmenu_instance:updateItems()
-                                end
-                            end),
-                    },
                 }
             end,
         },
@@ -384,31 +334,6 @@ function M:getSettingsMenuItems()
                                 "target=book",
                                 "enabled=", tostring(cache.download_book_images)
                             )
-                        end),
-                    },
-                    {
-                        text = _("Public account article images"),
-                        keep_menu_open = true,
-                        checked_func = function()
-                            return self.settings:get("cache").download_mp_images
-                        end,
-                        check_callback_updates_menu = true,
-                        callback = self:safeCallback(_("Public account article images"), function(touchmenu_instance)
-                            local cache = self.settings:get("cache")
-                            if cache.download_mp_images then
-                                self:setMPImageDownload(false)
-                                touchmenu_instance:updateItems()
-                                return
-                            end
-                            UIManager:show(ConfirmBox:new{
-                                text = _("Downloading public account article images may significantly increase download time. Continue?"),
-                                ok_text = _("Confirm"),
-                                ok_callback = self:safeCallback(_("Confirm"), function()
-                                    self:setMPImageDownload(true)
-                                    touchmenu_instance:updateItems()
-                                end),
-                                cancel_text = _("Cancel"),
-                            })
                         end),
                     },
                     {
@@ -660,14 +585,6 @@ function M:getSettingsMenuItems()
                         end),
                     },
                     {
-                        text = _("Renew cookie now"),
-                        enabled_func = function() return not self.settings.mock_endpoint end,
-                        keep_menu_open = true,
-                        callback = self:safeCallback(_("Renew cookie now"), function()
-                            self:renewCookieWithUI()
-                        end),
-                    },
-                    {
                         text = _("Clear account data"),
                         enabled_func = function() return not self.settings.mock_endpoint end,
                         keep_menu_open = true,
@@ -821,7 +738,7 @@ end
 
 function M:showAbout()
     UIManager:show(InfoMessage:new{
-        text = T(_("WeRead Plugin v%1\n\nDisclaimer: This project is for personal learning and technical research only, not for commercial use. All consequences arising from the use of this project (including but not limited to account bans, data loss, etc.) are borne by the user. The project author assumes no responsibility. Please comply with WeRead's user agreement and applicable laws and regulations.\n\nhttps://github.com/finlater/weread.koplugin"), self.version),
+        text = T(_("WeRead Plugin v%1\n\nDisclaimer: This project is for personal learning and technical research only, not for commercial use. All consequences arising from the use of this project (including but not limited to account bans, data loss, etc.) are borne by the user. The project author assumes no responsibility. Please comply with WeRead's user agreement and applicable laws and regulations.\n\nhttps://github.com/elemount/weread.koplugin"), self.version),
     })
 end
 

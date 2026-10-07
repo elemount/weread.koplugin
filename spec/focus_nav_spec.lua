@@ -207,7 +207,7 @@ expect(short_view.onNextPage(short_view) == true,
 expect(short_view.selected.y == 2,
     "short-list paging clamps at the end of the list")
 
--- Without a scroll area (e.g. read stats), paging falls back to one row
+-- Without a scroll area, paging falls back to one row
 focus_moves = {}
 local plain_view = make_view()
 plain_view.selected.y = 1

@@ -2,8 +2,9 @@ local ltn12 = require("ltn12")
 local logger = require("weread.lib.logger")
 local socketutil = require("socketutil")
 local http = require("socket.http")
-local Cookie = require("weread.lib.cookie")
 local WeRead = require("weread.lib.protocol")
+local DeviceIdentity = require("weread.lib.device_identity")
+local Crypto = require("weread.lib.crypto")
 
 local ok_json, json = pcall(require, "json")
 if not ok_json then
@@ -11,6 +12,9 @@ if not ok_json then
 end
 
 local DEFAULT_TIMEOUT_SECONDS = 15
+-- The e-ink APK talks to the same native WeRead service used by the mobile
+-- clients. Its LoginStateInterceptor sends these credentials on every call.
+local NATIVE_API_BASE = "https://i.weread.qq.com"
 local Client = {}
 Client.__index = Client
 
@@ -25,147 +29,68 @@ local function header_value(headers, name)
     return nil
 end
 
-local function scalar_header_value(headers, name)
-    local value = header_value(headers, name)
-    if type(value) == "table" then
-        if value[1] == nil then return nil end
-        return tostring(value[1])
+local function query_string(params)
+    local keys = {}
+    for key, value in pairs(params or {}) do
+        if value ~= nil then keys[#keys + 1] = key end
     end
-    return value
-end
-
-local function http_error(client, code, text, headers)
-    text = text or ""
-    local content_type = tostring(header_value(headers, "content-type") or "unknown")
-    local parts = {
-        "HTTP " .. tostring(code),
-        "content_type=" .. content_type,
-        "body_bytes=" .. tostring(#text),
-    }
-    local looks_like_json = content_type:lower():find("json", 1, true)
-        or text:match("^%s*{") ~= nil
-        or text:match("^%s*%[") ~= nil
-    if looks_like_json and #text <= 65536 then
-        local ok, data = pcall(function()
-            return client:json_decode(text)
-        end)
-        if ok and type(data) == "table" then
-            local err_code = data.errCode or data.errcode or data.code
-            local err_message = data.errMsg or data.errmsg or data.message or data.msg
-            if err_code ~= nil then
-                table.insert(parts, "error_code=" .. tostring(err_code))
-            end
-            if err_message ~= nil then
-                local message = tostring(err_message):gsub("[%c]+", " "):sub(1, 200)
-                table.insert(parts, "error_message=" .. message)
-            end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    local parts = {}
+    for _, key in ipairs(keys) do
+        local value = params[key]
+        if type(value) == "table" then
+            local values = {}
+            for _, item in ipairs(value) do values[#values + 1] = WeRead.urlencode(item) end
+            parts[#parts + 1] = WeRead.urlencode(key) .. "=" .. table.concat(values, ",")
+        else
+            parts[#parts + 1] = WeRead.urlencode(key) .. "=" .. WeRead.urlencode(value)
         end
     end
-    return table.concat(parts, ", ")
+    return table.concat(parts, "&")
 end
 
 local function deepcopy(value)
-    if type(value) ~= "table" then
-        return value
-    end
+    if type(value) ~= "table" then return value end
     local out = {}
-    for key, item in pairs(value) do
-        out[key] = deepcopy(item)
-    end
+    for key, item in pairs(value) do out[key] = deepcopy(item) end
     return out
 end
 
-local function table_summary(value)
-    if type(value) ~= "table" then
-        return type(value)
-    end
-    local count = 0
-    for _key in pairs(value) do
-        count = count + 1
-    end
-    return "table(" .. tostring(count) .. ")"
-end
-
-local function log_error(err)
-    local text = tostring(err):gsub("[%c]+", " ")
-    if #text > 500 then
-        return text:sub(1, 500) .. "..."
-    end
-    return text
-end
-
-local function log_response(label, context, text)
-    context = context or {}
-    text = text or ""
-    logger.err(
-        label,
-        "method=", tostring(context.method or "unknown"),
-        "url=", tostring(context.url or "unknown"),
-        "api=", tostring(context.api_name or "unknown"),
-        "status=", tostring(context.code or "unknown"),
-        "content_type=", tostring(header_value(context.headers, "content-type") or "unknown"),
-        "body_bytes=", tostring(#text),
-        "response_body=", text
-    )
-end
-
 local function merge_req_opts(default_opts, user_opts)
-    default_opts = default_opts or {}
-    if not user_opts then
-        return deepcopy(default_opts)
-    end
-    local result = deepcopy(default_opts)
-    for k, v in pairs(user_opts) do
-        if k == "headers" and type(v) == "table" then
+    local result = deepcopy(default_opts or {})
+    if type(user_opts) ~= "table" then return result end
+    for key, value in pairs(user_opts) do
+        if key == "headers" and type(value) == "table" then
             result.headers = result.headers or {}
-            for hk, hv in pairs(v) do
-                local target = hk:lower()
-                for existing_k, _ in pairs(result.headers) do
-                    if type(existing_k) == "string" and existing_k:lower() == target then
-                        result.headers[existing_k] = nil
+            for header, header_content in pairs(value) do
+                local target = tostring(header):lower()
+                for existing in pairs(result.headers) do
+                    if tostring(existing):lower() == target then
+                        result.headers[existing] = nil
                     end
                 end
-                result.headers[hk] = deepcopy(hv)
+                result.headers[header] = deepcopy(header_content)
             end
         else
-            result[k] = deepcopy(v)
+            result[key] = deepcopy(value)
         end
     end
     return result
 end
 
-local function is_weread_url(url)
-    local authority = tostring(url or ""):match("^https?://([^/]+)")
-    if not authority then
-        return false
-    end
-    local host = authority:lower():gsub(":%d+$", "")
-    return host == "weread.qq.com" or host:sub(-#".weread.qq.com") == ".weread.qq.com"
-end
-
 local function absolute_url(base_url, location)
-    if type(location) ~= "string" or location == "" then
-        return nil
-    end
-    if location:match("^https?://") then
-        return location
-    end
+    if type(location) ~= "string" or location == "" then return nil end
+    if location:match("^https?://") then return location end
     local scheme, host = tostring(base_url or ""):match("^(https?)://([^/]+)")
-    if not scheme then
-        return location
-    end
-    if location:sub(1, 1) == "/" then
-        return scheme .. "://" .. host .. location
-    end
+    if not scheme then return location end
+    if location:sub(1, 1) == "/" then return scheme .. "://" .. host .. location end
     local prefix = base_url:match("^(https?://.*/)") or (scheme .. "://" .. host .. "/")
     return prefix .. location
 end
 
 local function url_origin(url)
     local scheme, authority = tostring(url or ""):match("^(https?)://([^/]+)")
-    if not scheme then
-        return nil
-    end
+    if not scheme then return nil end
     return scheme:lower() .. "://" .. authority:lower()
 end
 
@@ -178,9 +103,74 @@ local function clear_cross_origin_headers(headers)
     end
 end
 
+local function table_summary(value)
+    if type(value) ~= "table" then return type(value) end
+    local count = 0
+    for _key in pairs(value) do count = count + 1 end
+    return "table(" .. tostring(count) .. ")"
+end
+
+local function log_error(err)
+    local text = tostring(err):gsub("[%c]+", " ")
+    if #text > 500 then return text:sub(1, 500) .. "..." end
+    return text
+end
+
+local function safe_log_url(url)
+    local path, query = tostring(url or ""):match("^([^?]+)%?(.*)$")
+    if not path then return tostring(url or "") end
+    local parts = {}
+    for part in query:gmatch("[^&]+") do
+        local key = part:match("^([^=]+)") or ""
+        local lower_key = key:lower()
+        if lower_key == "signature" or lower_key == "uuid" or lower_key == "code"
+            or lower_key == "accesstoken" or lower_key == "token" or lower_key == "ticket" then
+            parts[#parts + 1] = key .. "=<redacted>"
+        else
+            parts[#parts + 1] = part
+        end
+    end
+    return path .. "?" .. table.concat(parts, "&")
+end
+
+local function http_error(client, code, text, headers)
+    text = text or ""
+    local parts = {
+        "HTTP " .. tostring(code),
+        "content_type=" .. tostring(header_value(headers, "content-type") or "unknown"),
+        "body_bytes=" .. tostring(#text),
+    }
+    if #text <= 65536 then
+        local ok, data = pcall(function() return client:json_decode(text) end)
+        if ok and type(data) == "table" then
+            local err_code = data.errCode or data.errcode or data.code
+            local message = data.errMsg or data.errmsg or data.message or data.msg
+            if err_code ~= nil then parts[#parts + 1] = "error_code=" .. tostring(err_code) end
+            if message ~= nil then
+                parts[#parts + 1] = "error_message=" .. tostring(message):gsub("[%c]+", " "):sub(1, 200)
+            end
+        end
+    end
+    return table.concat(parts, ", ")
+end
+
+local function log_response(label, context, text)
+    context = context or {}
+    logger.err(
+        label,
+        "method=", tostring(context.method or "unknown"),
+        "url=", safe_log_url(context.url or "unknown"),
+        "api=", tostring(context.api_name or "unknown"),
+        "status=", tostring(context.code or "unknown"),
+        "content_type=", tostring(header_value(context.headers, "content-type") or "unknown"),
+        "body_bytes=", tostring(#(text or ""))
+    )
+end
+
 function Client:new(settings)
     return setmetatable({
         settings = settings,
+        user_agent = DeviceIdentity.user_agent(),
     }, self)
 end
 
@@ -228,19 +218,9 @@ function Client:request(opts)
     local body = opts.body
     local response
     local headers = {
-        ["User-Agent"] = WeRead.USER_AGENT,
+        ["User-Agent"] = self.user_agent or WeRead.USER_AGENT,
         ["Accept"] = "application/json, text/plain, */*"
     }
-    local is_handle_cookie = not opts.skip_cookie and is_weread_url(opts.url)
-
-    if is_handle_cookie then
-        local cookies = self.settings:get("cookies", {})
-        local cookie_header = Cookie.to_header(cookies)
-        if cookie_header ~= "" then
-            headers["Cookie"] = cookie_header
-        end
-    end
-
     if body then
         headers["Content-Length"] = tostring(#body)
     end
@@ -266,6 +246,11 @@ function Client:request(opts)
         sink = sink_to_use,
         headers = headers,
     }, opts)
+    -- Authentication is carried only by the APK vid/accessToken headers.
+    -- Do not allow old Web Reader cookies through this generic transport.
+    for key in pairs(req_opts.headers or {}) do
+        if tostring(key):lower() == "cookie" then req_opts.headers[key] = nil end
+    end
     -- Redirects are handled explicitly by request_follow so credentials can be
     -- rebuilt for every destination instead of being copied across origins.
     req_opts.redirect = false
@@ -288,7 +273,6 @@ function Client:request(opts)
         -- LuaSocket falls back to http.PROXY for nil/false. Point this request
         -- at the mock itself so a global Internet proxy cannot intercept it.
         req_opts.proxy = self.settings.mock_endpoint
-        is_handle_cookie = false
     end
 
     local results = { pcall(http.request, req_opts) }
@@ -297,7 +281,7 @@ function Client:request(opts)
         logger.err(
             "HTTP transport failed:",
             "method=", tostring(req_opts.method),
-            "url=", tostring(req_opts.url),
+            "url=", safe_log_url(req_opts.url),
             "api=", tostring(diagnostic_api or "unknown"),
             "error=", tostring(results[2])
         )
@@ -309,13 +293,6 @@ function Client:request(opts)
     end
 
     if not opts.sink then response = table.concat(response) end
-    if is_handle_cookie and opts.persist_response_cookies ~= false then
-        local set_cookie = header_value(resp_headers, "set-cookie")
-        if set_cookie then
-            self.settings:merge_set_cookie(set_cookie)
-        end
-    end
-
     local code = tonumber(raw_code)
     if code and code >= 400 then
         log_response("HTTP response failed:", {
@@ -343,7 +320,7 @@ function Client:test_mock_connection(config)
     if not endpoint then error(err) end
     local probe = Client:new({ get = function(_self, _key, default) return default end })
     local text, code = probe:request({
-        url = endpoint .. "/health", proxy = endpoint, timeout = { 3, 3 }, skip_cookie = true,
+        url = endpoint .. "/health", proxy = endpoint, timeout = { 3, 3 },
     })
     if code ~= 200 or probe:json_decode(text).service ~= "weread-mock" then
         error("The address did not respond as a WeRead mock server")
@@ -396,144 +373,6 @@ function Client:request_follow(opts, max_redirects)
     error("Too many redirects")
 end
 
--- Download a response directly to disk. The sink deliberately stays open when
--- LuaSocket signals end-of-response because request_follow may need to reuse it
--- after a redirect. On every redirect the partial response body is discarded.
-function Client:download_to_file(url, path, opts)
-    opts = opts or {}
-    local part_path = path .. ".part"
-    pcall(os.remove, part_path)
-    local handle, open_err = io.open(part_path, "wb")
-    if not handle then error(open_err or "could not create download file") end
-
-    local bytes = 0
-    local max_bytes = tonumber(opts.max_bytes)
-    local function reopen()
-        if handle then handle:close() end
-        handle, open_err = io.open(part_path, "wb")
-        if not handle then error(open_err or "could not reset download file") end
-        bytes = 0
-    end
-    local function sink(chunk)
-        if not chunk then return 1 end
-        if max_bytes and bytes + #chunk > max_bytes then
-            return nil, "download exceeds size limit"
-        end
-        local ok, err = handle:write(chunk)
-        if not ok then return nil, err end
-        bytes = bytes + #chunk
-        return 1
-    end
-
-    local request_opts = merge_req_opts(opts, {
-        url = url,
-        method = "GET",
-        maxredirects = 5,
-        sink = sink,
-        on_redirect = function()
-            reopen()
-        end,
-        headers = {
-            ["Accept"] = header_value(opts.headers, "Accept") or opts.accept or "*/*",
-            ["Referer"] = header_value(opts.headers, "Referer") or opts.referer or "https://weread.qq.com/",
-        },
-    })
-    request_opts.max_bytes = nil
-    request_opts.accept = nil
-    request_opts.referer = nil
-
-    local ok, text, code, resp_headers = pcall(function()
-        return self:request_follow(request_opts)
-    end)
-    if handle then handle:close() end
-    handle = nil
-    if not ok then
-        pcall(os.remove, part_path)
-        error(text, 0)
-    end
-    if not code or code < 200 or code >= 300 then
-        pcall(os.remove, part_path)
-        error(http_error(self, code, text, resp_headers))
-    end
-    if bytes == 0 then
-        pcall(os.remove, part_path)
-        error("download returned an empty body")
-    end
-    pcall(os.remove, path)
-    local renamed, rename_err = os.rename(part_path, path)
-    if not renamed then
-        pcall(os.remove, part_path)
-        error(rename_err or "could not commit downloaded file")
-    end
-    return path, bytes, resp_headers
-end
-
-function Client:post_json(url, data, opts)
-    opts = opts or {}
-    local referer = header_value(opts.headers, "Referer") or opts.referer
-    local req_opts = merge_req_opts(opts, {
-        url = url,
-        method = "POST",
-        body = self:json_encode(data),
-        headers = {
-            ["Content-Type"] = "application/json;charset=UTF-8",
-            ["Origin"] = "https://weread.qq.com",
-            ["Referer"] = referer or "https://weread.qq.com/",
-        }})
-    local text, code, resp_headers = self:request(req_opts)
-    if code and code >= 200 and code < 300 then
-        return self:decode_http_json(text, {
-            method = "POST",
-            url = url,
-            api_name = opts.diagnostic_api,
-            code = code,
-            headers = resp_headers,
-        }), code, resp_headers
-    end
-    error(http_error(self, code, text, resp_headers))
-end
-
-function Client:get_text(url, opts)
-    opts = opts or {}
-    local accept = header_value(opts.headers, "Accept") or opts.accept
-    local referer = header_value(opts.headers, "Referer") or opts.referer
-    local req_opts = merge_req_opts(opts, {
-        url = url,
-        method = "GET",
-        headers = {
-            ["Accept"] = accept or "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            ["Referer"] = referer or "https://weread.qq.com/",
-        }})
-    local text, code, resp_headers = self:request(req_opts)
-    if code and code >= 200 and code < 300 then
-        return text, code, resp_headers
-    end
-    error(http_error(self, code, text, resp_headers))
-end
-
-function Client:get_public_text(url, opts)
-    opts = opts or {}
-    local req_opts = merge_req_opts(opts, {
-        maxredirects = 5,
-        headers = {
-            ["Accept"] = header_value(opts.headers, "Accept") or opts.accept or "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            ["Referer"] = header_value(opts.headers, "Referer") or opts.referer or "https://mp.weixin.qq.com/",
-        }
-    })
-    local text, code, resp_headers, _status, final_url = self:request_follow(
-        merge_req_opts(req_opts, { url = url, method = "GET" })
-    )
-    if not code or code < 200 or code >= 300 then
-        error(http_error(self, code, text, resp_headers))
-    end
-    return text, {
-        code = code,
-        content_type = header_value(resp_headers, "content-type"),
-        length = #(text or ""),
-        url = final_url or url,
-    }
-end
-
 function Client:get_binary(url, opts)
     opts = opts or {}
     local req_opts = merge_req_opts(opts, {
@@ -552,78 +391,205 @@ function Client:get_binary(url, opts)
     error(http_error(self, code, text, resp_headers))
 end
 
-function Client:renew_cookie()
-    local result, code, resp_headers = self:post_json("https://weread.qq.com/web/login/renewal", {
-        rq = "%2Fweb%2Fbook%2Fread",
-        ql = false,
-    }, {
-        -- Do not persist renewal cookies until the response explicitly confirms
-        -- success; failed renewals must leave the current credential set intact.
-        persist_response_cookies = false,
-    })
-    if not WeRead.is_success_response(result) then
-        error("Cookie renewal response did not include succ=1")
+function Client:native_headers(extra, allow_anonymous)
+    local auth = self.settings:get("auth", {}) or {}
+    local vid = auth.vid
+    if type(vid) ~= "string" or vid == "" then
+        vid = (self.settings:get("account", {}) or {}).user_vid
     end
-    local updates = {}
-    local set_cookie = header_value(resp_headers, "set-cookie")
-    if set_cookie then
-        updates.cookies = Cookie.merge_set_cookie(
-            self.settings:get("cookies", {}),
-            set_cookie
-        )
+    local access_token = auth.access_token
+    local has_credentials = not allow_anonymous
+        and type(vid) == "string" and vid ~= ""
+        and type(access_token) == "string" and access_token ~= ""
+    if not has_credentials and not allow_anonymous then
+        error("WeRead QR credentials are not configured")
     end
-    local wr_ticket = scalar_header_value(resp_headers, "x-wr-ticket")
-    if wr_ticket and wr_ticket ~= "" then
-        updates.wr_ticket = wr_ticket
+    local headers = {}
+    if has_credentials then
+        headers.vid = vid
+        headers.accessToken = access_token
     end
-    local wr_wrpa = scalar_header_value(resp_headers, "x-wrpa-0")
-    if wr_wrpa and wr_wrpa ~= "" then
-        updates.wr_wrpa = wr_wrpa
-    end
-    self.settings:update_auth(updates, { replace_cookies = true })
-    return result, code, resp_headers
+    for key, value in pairs(extra or {}) do headers[key] = value end
+    return headers
 end
 
-function Client:gateway(api_name, params)
-    local payload = merge_req_opts({
-        api_name = api_name,
-        skill_version = (params and params.skill_version) or WeRead.SKILL_VERSION
-    }, params)
+local function response_error_code(client, text)
+    if type(text) ~= "string" or text == "" then return nil end
+    local ok, data = pcall(client.json_decode, client, text)
+    if not ok or type(data) ~= "table" then return nil end
+    return tonumber(data.errCode or data.errcode or data.code), data
+end
 
-    local api_key = self.settings:get("api_key", "")
-    if api_key == "" then
-        error("WeRead API key is not configured")
+function Client:refresh_native_auth(expired_access_token, ref_cgi)
+    local auth = self.settings:get("auth", {}) or {}
+    -- Another request may already have refreshed this session while this
+    -- response was in flight. Reuse those credentials instead of rotating
+    -- the same refresh token twice.
+    if expired_access_token and auth.access_token ~= expired_access_token then
+        return true
     end
-    return self:post_json("https://i.weread.qq.com/api/agent/gateway", payload, {
-        diagnostic_api = api_name,
-        skip_cookie = true,
-        headers = {
-            ["Authorization"] = "Bearer " .. api_key,
-        },
+    local refresh_token = auth.refresh_token
+    if type(refresh_token) ~= "string" or refresh_token == "" then return false end
+    if self._refreshing_native_auth then return false end
+    self._refreshing_native_auth = true
+
+    local ok, result = pcall(function()
+        local device_id = self.settings:get_device_fingerprint()
+        local timestamp = math.floor(os.time() * 1000)
+        local random = math.random(0, 999)
+        local payload = {
+            refreshToken = refresh_token,
+            deviceId = device_id,
+            wxToken = 0,
+            inBackground = 0,
+            trackId = "",
+            kickType = 1,
+            refCgi = ref_cgi or "",
+            timestamp = timestamp,
+            random = random,
+            signature = Crypto.sha256_hex(tostring(timestamp) .. device_id .. tostring(random)),
+            deviceName = DeviceIdentity.device_name(),
+        }
+        local url = NATIVE_API_BASE .. "/login"
+        local text, code, headers = self:request({
+            url = url,
+            method = "POST",
+            body = self:json_encode(payload),
+            headers = self:native_headers({
+                ["Accept"] = "application/json, text/plain, */*",
+                ["Content-Type"] = "application/json;charset=UTF-8",
+                ["Origin"] = "https://weread.qq.com",
+                ["Referer"] = "https://weread.qq.com/",
+            }, true),
+            timeout = 30,
+            diagnostic_api = "/login (refreshToken)",
+        })
+        if not code or code < 200 or code >= 300 then
+            error(http_error(self, code, text, headers))
+        end
+        local login_result = self:decode_http_json(text, {
+            method = "POST", url = url, api_name = "/login (refreshToken)",
+            code = code, headers = headers,
+        })
+        if type(login_result) ~= "table" then
+            error("WeRead returned an invalid refresh response")
+        end
+        local vid = tostring(login_result.vid or "")
+        local access_token = tostring(login_result.accessToken or "")
+        if vid == "" or access_token == "" then
+            error("WeRead refresh response is missing account credentials")
+        end
+
+        local account = self.settings:get("account", {}) or {}
+        account.user_vid = vid
+        local user = type(login_result.user) == "table" and login_result.user or {}
+        if type(user.name) == "string" and user.name ~= "" then account.name = user.name end
+        local new_refresh_token = login_result.refreshToken
+        if type(new_refresh_token) ~= "string" or new_refresh_token == "" then
+            new_refresh_token = refresh_token
+        end
+        self.settings:update_auth({
+            auth = {
+                vid = vid,
+                access_token = access_token,
+                refresh_token = new_refresh_token,
+            },
+            account = account,
+        }, { replace_auth = true })
+        return true
+    end)
+
+    self._refreshing_native_auth = nil
+    if not ok then
+        logger.err("native WeRead token refresh failed:", log_error(result))
+        return false
+    end
+    return result == true
+end
+
+function Client:_native_request(method, path, params, data, opts, binary, retried)
+    opts = opts or {}
+    local query = query_string(params)
+    local url = NATIVE_API_BASE .. path .. (query ~= "" and ("?" .. query) or "")
+    local current_auth = self.settings:get("auth", {}) or {}
+    local request_headers = merge_req_opts({
+        ["Accept"] = binary and "*/*" or "application/json, text/plain, */*",
+        ["Referer"] = opts.referer or "https://weread.qq.com/",
+    }, opts.headers)
+    if method == "POST" then
+        request_headers = merge_req_opts({
+            ["Content-Type"] = "application/json;charset=UTF-8",
+            ["Origin"] = "https://weread.qq.com",
+        }, request_headers)
+    end
+    local text, code, headers = self:request({
+        url = url,
+        method = method,
+        body = method == "POST" and self:json_encode(data) or nil,
+        headers = self:native_headers(request_headers, opts.allow_anonymous),
+        timeout = opts.timeout or (binary and { 30, 120 } or nil),
+        diagnostic_api = path,
     })
+
+    local error_code = response_error_code(self, text)
+    if error_code == -2012 and not retried and not opts.allow_anonymous
+        and self:refresh_native_auth(current_auth.access_token, url) then
+        return self:_native_request(method, path, params, data, opts, binary, true)
+    end
+    if not code or code < 200 or code >= 300 then
+        error(http_error(self, code, text, headers))
+    end
+    if binary then return text, code, headers end
+    return self:decode_http_json(text, {
+        method = method, url = url, api_name = path, code = code, headers = headers,
+    }), code, headers
+end
+
+function Client:native_get(path, params, opts)
+    return self:_native_request("GET", path, params, nil, opts, false, false)
+end
+
+-- Native download endpoints return archive bytes rather than JSON. Authentication
+-- failures are JSON, so _native_request can refresh once before returning bytes.
+function Client:native_get_binary(path, params, opts)
+    return self:_native_request("GET", path, params, nil, opts, true, false)
+end
+
+function Client:native_post(path, data, opts)
+    return self:_native_request("POST", path, nil, data, opts, false, false)
+end
+
+-- Authentication bootstrap endpoints are part of the e-ink APK login path and
+-- are intentionally called without an existing vid/accessToken pair.
+function Client:get_wechat_login_ticket(nonce_str)
+    return self:native_get("/wxticket", { nonceStr = nonce_str }, {
+        allow_anonymous = true,
+    })
+end
+
+function Client:login_with_wechat_code(code, fields)
+    local data = {}
+    for key, value in pairs(fields or {}) do data[key] = value end
+    data.code = code
+    return self:native_post("/login", data, { allow_anonymous = true })
 end
 
 function Client:get_shelf()
     logger.info(
         "shelf sync request:",
         "api=/shelf/sync",
-        "skill_version=", WeRead.SKILL_VERSION,
-        "auth=api_key",
-        "cookies=skipped",
-        "params=none"
+        "auth=vid+accessToken",
+        "endpoint=/shelf/sync",
+        "synckey=0"
     )
-    local ok, result, code, headers = pcall(
-        self.gateway,
-        self,
-        "/shelf/sync",
-        {}
-    )
+    local ok, result, code, headers = pcall(function()
+        return self:native_get("/shelf/sync", { synckey = 0, lectureSynckey = 0 })
+    end)
     if not ok then
         logger.err(
             "shelf sync failed:",
             "api=/shelf/sync",
-            "skill_version=", WeRead.SKILL_VERSION,
-            "error=", log_error(result)
+                "error=", log_error(result)
         )
         error(result, 0)
     end
@@ -636,135 +602,40 @@ function Client:get_shelf()
         "books=", table_summary(type(result) == "table" and result.books or nil),
         "archive=", table_summary(type(result) == "table" and result.archive or nil),
         "albums=", table_summary(type(result) == "table" and result.albums or nil),
-        "mp=", table_summary(type(result) == "table" and result.mp or nil)
+        "groups=", table_summary(type(result) == "table" and result.archive or nil)
     )
     return result, code, headers
 end
 
 function Client:get_book_info(book_id)
-    return self:gateway("/book/info", { bookId = book_id })
+    return self:native_get("/book/info", { bookId = book_id })
 end
 
 function Client:get_book_reviews(book_id, review_list_type, count)
-    return self:gateway("/review/list", {
-        bookId = book_id,
-        reviewListType = review_list_type or 1,
-        count = count or 20,
+    return self:native_get("/review/list", {
+        bookId = book_id, listType = review_list_type or 1,
+        count = count or 20, synckey = 0, listMode = 0,
     })
 end
 
 function Client:get_progress(book_id)
-    return self:gateway("/book/getprogress", { bookId = book_id })
+    return self:native_get("/book/getProgress", { bookId = book_id })
 end
 
-function Client:get_web_progress(book_id)
-    local url = "https://weread.qq.com/web/book/getProgress?bookId="
-        .. WeRead.urlencode(book_id)
-        .. "&_=" .. tostring(os.time() * 1000)
-    local text, code, headers = self:get_text(url, {
-        accept = "application/json, text/plain, */*",
-        referer = WeRead.reader_url(book_id),
-    })
-    return self:decode_http_json(text, {
-        method = "GET",
-        url = url,
-        code = code,
-        headers = headers,
+function Client:get_chapter_infos(book_ids, sync_keys)
+    return self:native_post("/book/chapterInfos", {
+        bookIds = book_ids,
+        synckeys = sync_keys or { 0 },
     })
 end
 
--- Reading statistics detail.
--- mode: "weekly" | "monthly" | "annually" | "overall"
--- base_time: optional Unix timestamp; server normalizes it to the period start
---            (Monday / 1st of month / Jan 1st). Pass 0/nil for the current period.
-function Client:get_read_stats(mode, base_time)
-    local params = { mode = mode or "monthly" }
-    if base_time and tonumber(base_time) and tonumber(base_time) > 0 then
-        params.baseTime = tonumber(base_time)
-    end
-    return self:gateway("/readdata/detail", params)
-end
-
-function Client:get_mp_articles(book_id, max_idx, count, wr_ticket)
-    local url = string.format(
-        "https://weread.qq.com/web/mp/articles?bookId=%s&maxIdx=%d&count=%d",
-        WeRead.urlencode(book_id),
-        max_idx or 0,
-        count or 100
-    )
-
-    local custom_headers = {
-        ["Accept"] = "application/json, text/plain, */*",
-        ["Referer"] = "https://weread.qq.com/",
-    }
-
-    if wr_ticket and wr_ticket ~= "" then
-        custom_headers["x-wr-ticket"] = wr_ticket
-    end
-
-    local wrpa = self.settings:get("wr_wrpa", "")
-    if wrpa ~= "" then
-        custom_headers["x-wrpa-0"] = wrpa
-    end
-
-    local text, code, resp_headers = self:request({
-        url = url,
-        method = "GET",
-        headers = custom_headers,
-    })
-
-    if code and code >= 200 and code < 300 then
-        local data = self:decode_http_json(text, {
-            method = "GET",
-            url = url,
-            code = code,
-            headers = resp_headers,
-        })
-        if data.errCode and data.errCode ~= 0 then
-            return nil, data.errCode
-        end
-        return data, nil
-    end
-    error(http_error(self, code, text, resp_headers))
-end
-
-function Client:get_mp_content(review_id, opts)
-    opts = opts or {}
-    local url = "https://weread.qq.com/web/mp/content?reviewId=" .. WeRead.urlencode(review_id)
-
-    local custom_headers = {
-        ["Accept"] = "text/html,application/xhtml+xml,*/*",
-        ["Referer"] = opts.referer or "https://weread.qq.com/",
-    }
-    if not opts.skip_mp_auth_headers then
-        local wr_ticket = self.settings:get("wr_ticket", "")
-        if wr_ticket ~= "" then custom_headers["x-wr-ticket"] = wr_ticket end
-
-        local wrpa = self.settings:get("wr_wrpa", "")
-        if wrpa ~= "" then custom_headers["x-wrpa-0"] = wrpa end
-    end
-
-    local text, code, resp_headers = self:request({
-        url = url,
-        method = "GET",
-        headers = custom_headers,
-        timeout = opts.timeout,
-    })
-
-    if code and code >= 200 and code < 300 then
-        return text, {
-            code = code,
-            content_type = header_value(resp_headers, "content-type"),
-            length = #(text or ""),
-            url = url,
-        }
-    end
-    error(http_error(self, code, text, resp_headers))
-end
-
-function Client:report_read(payload, referer)
-    return self:post_json("https://weread.qq.com/web/book/read", payload, {
-        referer = referer or "https://weread.qq.com/",
+function Client:search_books(keyword, count)
+    return self:native_get("/store/search", {
+        keyword = keyword,
+        count = count or 20,
+        maxIdx = 0,
+        scope = 10,
+        v = 3,
     })
 end
 
@@ -777,16 +648,15 @@ function Client:get_chapter_underlines(book_id, chapter_uid)
     end
 
     local ok, result = pcall(function()
-        return self:gateway("/book/underlines", {
-            bookId = tostring(book_id),
-            chapterUid = chapter_uid,
+        return self:native_get("/book/underlines", {
+            bookId = tostring(book_id), chapterUid = chapter_uid, synckey = 0,
         })
     end)
     if not ok then
         return false, nil, tostring(result)
     end
     if type(result) ~= "table" then
-        return false, nil, "underlines: gateway returned non-table"
+        return false, nil, "underlines: native API returned non-table"
     end
     return true, result
 end
@@ -821,9 +691,10 @@ function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch)
     end
 
     local ok, result = pcall(function()
-        return self:gateway("/book/readreviews", {
+        return self:native_post("/book/readreviews", {
             bookId = tostring(book_id),
             chapterUid = chapter_uid,
+            cht2sMode = "",
             reviews = batch,
         })
     end)
@@ -831,7 +702,7 @@ function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch)
         return false, nil, tostring(result)
     end
     if type(result) ~= "table" or type(result.reviews) ~= "table" then
-        return false, nil, "readreviews: gateway returned invalid data"
+        return false, nil, "readreviews: native API returned invalid data"
     end
     return true, result
 end
@@ -868,37 +739,24 @@ function Client:get_review_comments(review_id, count, opts)
     end
 
     local comments_count = count or 20
-    local url = "https://weread.qq.com/web/review/single"
-        .. "?reviewId=" .. WeRead.urlencode(review_id)
-        .. "&commentsCount=" .. tostring(comments_count)
-        .. "&commentsDirection=" .. tostring(opts.comments_direction or 0)
-        .. "&likesCount=" .. tostring(opts.likes_count or 0)
-        .. "&synckey=" .. tostring(opts.synckey or 0)
-
-    local ok, text, code, headers = pcall(function()
-        return self:get_text(url, {
-            accept = "application/json, text/plain, */*",
-            referer = opts.referer or "https://weread.qq.com/",
-            timeout = opts.timeout,
+    local ok, parsed = pcall(function()
+        return self:native_get("/review/single", {
+            reviewId = review_id,
+            commentsCount = comments_count,
+            commentsDirection = opts.comments_direction or 0,
+            bookReviewCount = opts.book_review_count or 0,
+            likesCount = opts.likes_count or 0,
+            likesDirection = opts.likes_direction or 0,
+            synckey = opts.synckey or 0,
+        }, {
+            referer = opts.referer, timeout = opts.timeout,
         })
     end)
     if not ok then
-        return false, nil, tostring(text)
+        return false, nil, tostring(parsed)
     end
-    if not text or text == "" then
-        return false, nil, "empty response"
-    end
-
-    local decode_ok, parsed = pcall(function()
-        return self:decode_http_json(text, {
-            method = "GET",
-            url = url,
-            code = code,
-            headers = headers,
-        })
-    end)
-    if not decode_ok or type(parsed) ~= "table" then
-        return false, text, "invalid JSON"
+    if type(parsed) ~= "table" then
+        return false, parsed, "invalid response"
     end
     return true, parsed, nil
 end

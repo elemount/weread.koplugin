@@ -251,7 +251,7 @@ local bind_host = {
             return true
         end,
     },
-    client = { gateway = function() return {} end },
+    client = { search_books = function() return {} end },
     requireLogin = function() return true end,
     showInputDialog = function() end,
     runOnlineTask = function(_self, _label, callback) callback() end,

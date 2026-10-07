@@ -48,7 +48,7 @@ def main():
     ) + "最后一条更新：感谢使用微信读书插件。"
     metadata = dict(tag_name="v9999.9.1", body=notes, assets=[dict(
         name=asset,
-        browser_download_url="https://github.com/finlater/weread.koplugin/releases/download/v9999.9.1/" + asset,
+        browser_download_url="https://github.com/elemount/weread.koplugin/releases/download/v9999.9.1/" + asset,
         size=(root / "fixtures" / asset).stat().st_size,
     ) for asset in (name, name + ".sha256")])
     (root / "fixtures/release.json").write_text(json.dumps(metadata, ensure_ascii=False))

@@ -30,12 +30,11 @@ expect(groups[1].key == "archive:7" and Groups.find(groups, "archive:7") == grou
 
 local projected = Groups.list({
     { archiveId = 8, name = "Reading", bookIds = { "one" } },
-    { archiveId = 9, name = "公众号", bookIds = { "MP_WXS_123" } },
     { archiveId = 10, name = "Empty", bookIds = {} },
 }, books, "Unnamed group", "Uncategorized")
 expect(#projected == 3 and projected[1].label == "Reading"
         and projected[2].label == "Empty" and projected[3].label == "Uncategorized",
-    "public-account archive or ungrouped books were projected incorrectly")
+    "shelf groups or ungrouped books were projected incorrectly")
 expect(#projected[3].books == 2 and projected[3].books[1].bookId == "two"
         and projected[3].books[2].bookId == "three",
     "ungrouped books were not retained in shelf order")

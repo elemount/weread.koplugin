@@ -6,7 +6,6 @@ end
 local BookStore = {}
 
 local reading_fields = {
-    app_id = true,
     chapter_idx = true,
     chapter_offset = true,
     chapter_uid = true,
@@ -14,26 +13,10 @@ local reading_fields = {
     last_pull_at = true,
     last_remote_position = true,
     last_sync_error = true,
-    last_upload_at = true,
-    last_uploaded_position = true,
-    pclts = true,
-    pending_upload_position = true,
-    pending_upload_reason = true,
     progress = true,
-    psvts = true,
-    read_context_updated_at = true,
-    read_session_entered_at = true,
-    read_session_id = true,
-    reader_url = true,
     summary = true,
-    token = true,
     verified_at = true,
     verified_source = true,
-}
-
-local article_fields = {
-    mp_articles = true,
-    mp_articles_time = true,
 }
 
 local function basename_safe(value)
@@ -127,7 +110,7 @@ function BookStore.load(settings, book_id, index)
     local dir = resolved_dir(settings, book_id, index)
     merge(book, read_json(dir .. "/metadata.json"))
     merge(book, read_json(dir .. "/reading_state.json"))
-    merge(book, read_json(dir .. "/articles.json"))
+    book.psvts, book.pclts, book.token, book.reader_url = nil, nil, nil, nil
     book.book_id = book.book_id or book.bookId or tostring(book_id)
     book.cache_dir = dir
     return book
@@ -140,11 +123,8 @@ function BookStore.save(settings, book_id, book)
 
     local metadata = { book_id = book.book_id or book.bookId or tostring(book_id) }
     local reading_state = {}
-    local articles = {}
     for key, value in pairs(book) do
-        if article_fields[key] then
-            articles[key] = value
-        elseif reading_fields[key] then
+        if reading_fields[key] then
             reading_state[key] = value
         elseif key ~= "chapters" and key ~= "cache_dir" and key ~= "bookId" then
             metadata[key] = value
@@ -158,12 +138,6 @@ function BookStore.save(settings, book_id, book)
         if not ok then return false, err end
     else
         os.remove(dir .. "/reading_state.json")
-    end
-    if has_values(articles) then
-        ok, err = write_json(dir .. "/articles.json", articles)
-        if not ok then return false, err end
-    else
-        os.remove(dir .. "/articles.json")
     end
     return true, { cache_dir = dir }
 end

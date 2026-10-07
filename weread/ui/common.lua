@@ -179,10 +179,9 @@ function M:showList(title, items, empty_text, options)
     return menu
 end
 
-function M:requireLogin(require_cookie, require_api_key)
-    local missing_cookie = require_cookie and not self.settings:is_cookie_configured()
-    local missing_api_key = require_api_key and not self.settings:is_api_configured()
-    if not missing_cookie and not missing_api_key then
+function M:requireLogin(require_auth)
+    local missing_auth = require_auth and not self.settings:is_authenticated()
+    if not missing_auth then
         return true
     end
     self:showTransientInfo(_("Please scan the QR code to log in first."), 2)
@@ -205,44 +204,30 @@ function M:refreshLoginMenu()
     self:refreshUI()
 end
 
-function M:renewCookieWithUI()
-    if not self:requireLogin(true, false) then
-        return
-    end
-    self:runNetworkAction(_("Renew cookie"), function()
-        self.client:renew_cookie()
-        logger.info("cookie renewed")
-        return _("WeRead cookie renewed.")
-    end)
-end
-
 function M:showAccountStatus()
     local account = self.settings:get("account", {})
     local account_name = type(account.name) == "string" and account.name or ""
     if account_name == "" then
-        account_name = (self.settings:is_cookie_configured() or self.settings:is_api_configured())
+        account_name = self.settings:is_authenticated()
             and _("Unknown account") or _("Not logged in")
     end
     local login_method = account.login_method == "qr" and _("QR login") or _("Unknown")
-    local cookie_status = self.settings:is_cookie_configured() and _("configured") or _("missing")
-    local api_status = self.settings:is_api_configured() and _("configured") or _("missing")
+    local credential_status = self.settings:is_authenticated() and _("configured") or _("missing")
     self:showInfo(T(
-        _("Account: %1\nLogin method: %2\nCookie: %3\nOfficial API key: %4\nCache directory:\n%5"),
+        _("Account: %1\nLogin method: %2\nNative credentials: %3\nCache directory:\n%4"),
         account_name,
         login_method,
-        cookie_status,
-        api_status,
+        credential_status,
         BD.dirpath(self.settings.cache_dir)
     ))
 end
 
 function M:confirmClearAccount()
     UIManager:show(ConfirmBox:new{
-        text = _("Clear WeRead cookie and API key? Cached books will remain."),
+        text = _("Clear WeRead login? Cached books will remain."),
         ok_text = _("Clear"),
         ok_callback = self:safeCallback(_("Clear"), function()
             self.qr_login:cancel()
-            self.read_report:stop("account_cleared")
             self.settings:reset_account()
             if self.onWeReadAccountChanged then
                 self:onWeReadAccountChanged()

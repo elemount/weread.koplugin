@@ -16,7 +16,6 @@ local PluginUtil = require("weread.lib.plugin_util")
 local ProgressSync = require("weread.lib.progress_sync")
 local ProgressSyncDialog = require("weread.ui.progress_sync_dialog")
 local QRLogin = require("weread.lib.qr_login")
-local ReadReport = require("weread.lib.read_report")
 local Settings = require("weread.lib.settings")
 local Updater = require("weread.lib.updater")
 local UpdaterUI = require("weread.ui.updater")
@@ -26,7 +25,7 @@ local _ = PluginUtil.tr
 local WeReadPlugin = WidgetContainer:extend{
     name = "weread",
     is_doc_only = false,
-    version = "1.6.0",
+    version = "1.7.0",
 }
 
 -- Stable entry point used by third-party launchers such as SimpleUI and ZenUI.
@@ -80,7 +79,7 @@ function WeReadPlugin:init()
         refresh_shelf   = function() self:refreshShelfCacheIndicators() end,
         open_file       = function(path) self:openFile(path) end,
         safe_callback   = function(label, fn) return self:safeCallback(label, fn) end,
-        require_login   = function(cookie, api_key) return self:requireLogin(cookie, api_key) end,
+        require_login   = function(authenticated) return self:requireLogin(authenticated) end,
         run_online_task = function(label, fn)
             return self:runOnlineTask(label, fn)
         end,
@@ -94,29 +93,6 @@ function WeReadPlugin:init()
         self.downloader:recover()
     end
     self.qr_login = QRLogin:new(self, self.client, self.settings)
-    self.read_report = ReadReport:new{
-        settings = self.settings,
-        client = self.client,
-        library_db = self.library_db,
-        scheduler = UIManager,
-        get_document = function()
-            return self.ui and self.ui.document
-        end,
-        detect_book = function()
-            return self:detectWeReadBook()
-        end,
-        position_provider = function(book_id)
-            if not self.progress_sync then
-                return nil, "progress_sync_initializing", true
-            end
-            return self.progress_sync:position_for_report(book_id)
-        end,
-        -- The report tick runs on the UI loop; use the link-state check here
-        -- because NetworkMgr:isOnline() does a blocking DNS lookup.
-        is_online = function()
-            return self:isNetworkConnected()
-        end,
-    }
     self.progress_sync = ProgressSync:new{
         settings = self.settings,
         client = self.client,
@@ -142,7 +118,7 @@ function WeReadPlugin:init()
                 return nil, "book_not_found"
             end
             local ok, chapters_or_err = pcall(function()
-                Content.ensure_reader_state(self.client, book)
+                Content.ensure_book_info(self.client, book)
                 return Content.fetch_catalog(self.client, book)
             end)
             if not ok then
@@ -169,10 +145,6 @@ function WeReadPlugin:init()
         run_online = function(_kind, callback, run_options)
             return self:runOnlineTask(
                 _("Sync progress"), callback, nil, run_options)
-        end,
-        upload_position = function(book_id, position, elapsed_seconds)
-            return self.read_report:upload_position(
-                book_id, position, elapsed_seconds)
         end,
         goto_fraction = function(fraction)
             local percent = math.floor(
@@ -206,13 +178,6 @@ function WeReadPlugin:init()
     self.ui.menu:registerToMainMenu(self)
     self.integrations = Integrations
     self.integrations.register(self)
-    local read_report = self.settings:get("read_report")
-    if read_report.enabled
-        and read_report.mode == "manual"
-        and read_report.book_id ~= ""
-        and read_report.report_on_open == false then
-        self.read_report:maybe_start("plugin_start")
-    end
     self._reader_session_gen = 0
     self.updater:schedule_auto_check()
     logger.info("initialized:", "version=", self.version)
@@ -223,7 +188,6 @@ Mixin.apply(WeReadPlugin, {
     (require("weread.ui.common")),
     (require("weread.ui.menu")),
     (require("weread.ui.cache")),
-    (require("weread.ui.read_report")),
     (require("weread.ui.library")),
     (require("weread.ui.annotations_controller")),
     (require("weread.ui.xpointer_overlay_controller")),
