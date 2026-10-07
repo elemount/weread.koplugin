@@ -54,6 +54,7 @@ end
 package.preload["weread.lib.content"] = function()
     return {
         ensure_book_info = function() end,
+        release_chapter_source = function() end,
         fetch_single_chapter_source = function()
             error("injected transient timeout")
         end,

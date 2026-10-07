@@ -274,7 +274,9 @@ local function same_uid(left, right)
     return left ~= nil and tostring(left) == tostring(right)
 end
 
-local function chapter_file(entries, chapter_uid, json_decode)
+local decrypt_file_if_needed
+
+local function chapter_file(entries, chapter_uid, json_decode, book_id, allow_fallback)
     local info = entries["info.txt"]
     if info and json_decode then
         local decode_ok, decoded = pcall(json_decode, info)
@@ -284,10 +286,22 @@ local function chapter_file(entries, chapter_uid, json_decode)
             for _, record in ipairs(records) do
                 if same_uid(record.chapterUid or record.uid, chapter_uid)
                     and type(record.files) == "table" and #record.files > 0 then
-                    local name = tostring(record.files[#record.files])
-                    if entries[name] then return entries[name], name end
-                    local leaf = name:match("([^/]+)$")
-                    if leaf and entries[leaf] then return entries[leaf], leaf end
+                    local chunks, names = {}, {}
+                    for _, file_name in ipairs(record.files) do
+                        local name = tostring(file_name)
+                        local body = entries[name]
+                        if not body then
+                            local leaf = name:match("([^/]+)$")
+                            if leaf then name, body = leaf, entries[leaf] end
+                        end
+                        if not body then
+                            error("chapter archive omitted file " .. tostring(file_name)
+                                .. " for chapter " .. tostring(chapter_uid))
+                        end
+                        names[#names + 1] = name
+                        chunks[#chunks + 1] = decrypt_file_if_needed(body, book_id)
+                    end
+                    return table.concat(chunks), names
                 end
             end
         end
@@ -299,10 +313,13 @@ local function chapter_file(entries, chapter_uid, json_decode)
         end
     end
     table.sort(matches, function(a, b) return a.name < b.name end)
-    if #matches > 0 then return matches[1].body, matches[1].name end
+    if #matches > 0 then
+        return decrypt_file_if_needed(matches[1].body, book_id), { matches[1].name }
+    end
+    if allow_fallback == false then return nil end
     for name, body in pairs(entries) do
         if name:lower():match("%.xhtml$") or name:lower():match("%.html$") then
-            return body, name
+            return decrypt_file_if_needed(body, book_id), { name }
         end
     end
     return nil
@@ -338,10 +355,12 @@ local function xor_book_bytes(data, book_id)
 end
 
 local function looks_like_markup(value)
-    return value and value:match("^%s*<") and (value:find("<body", 1, true) or value:find("<html", 1, true))
+    if not value then return false end
+    local prefix = value:gsub("^\239\187\191", "")
+    return prefix:match("^%s*<[%w!?/]") ~= nil
 end
 
-local function decrypt_file_if_needed(data, book_id)
+decrypt_file_if_needed = function(data, book_id)
     if looks_like_markup(data) then return data end
     local decoded = xor_book_bytes(data, book_id)
     if looks_like_markup(decoded) then return decoded end
@@ -363,15 +382,47 @@ function NativeChapter.decrypt_asset(data, book_id)
     return image_signature(decoded) and decoded or data
 end
 
-function NativeChapter.fetch(client, book, chapter, json_decode, vid)
+local function build_chapter_ids(chapters)
+    local ids = {}
+    for _, chapter in ipairs(chapters or {}) do
+        local uid = tonumber(chapter and (chapter.chapterUid or chapter.chapterId))
+        if not uid then error("chapter uid must be numeric") end
+        ids[#ids + 1] = uid
+    end
+    table.sort(ids)
+    local ranges, first, last = {}, nil, nil
+    for _, uid in ipairs(ids) do
+        if first == nil then
+            first, last = uid, uid
+        elseif uid > last then
+            if uid == last + 1 then
+                last = uid
+            else
+                ranges[#ranges + 1] = first == last
+                    and tostring(first) or (tostring(first) .. "-" .. tostring(last))
+                first, last = uid, uid
+            end
+        end
+    end
+    if first ~= nil then
+        ranges[#ranges + 1] = first == last
+            and tostring(first) or (tostring(first) .. "-" .. tostring(last))
+    end
+    if #ranges == 0 then error("at least one chapter is required") end
+    return table.concat(ranges, ",")
+end
+
+function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, options)
+    options = options or {}
     local book_id = tostring(book.book_id or book.bookId or "")
-    local chapter_uid = chapter and (chapter.chapterUid or chapter.chapterId)
-    if book_id == "" or chapter_uid == nil then error("book id and chapter uid are required") end
-    local format = tostring(book.format or book.bookType or chapter.format or "epub"):lower()
+    if book_id == "" or type(chapters) ~= "table" or #chapters == 0 then
+        error("book id and chapters are required")
+    end
+    local format = tostring(book.format or book.bookType or chapters[1].format or "epub"):lower()
     local book_type = format:find("txt", 1, true) and "txt" or "epub"
     local params = {
         bookId = book_id,
-        chapters = tostring(chapter_uid),
+        chapters = build_chapter_ids(chapters),
         pf = "wechat_wx-2001-android-100-weread",
         pfkey = "pfKey",
         zoneId = "1",
@@ -382,15 +433,23 @@ function NativeChapter.fetch(client, book, chapter, json_decode, vid)
         stopAutoPayWhenBNE = 1,
         preload = 0,
         preview = 0,
-        offline = 0,
+        offline = options.offline and 1 or 0,
     }
     local body, _, headers = client:native_get_binary("/book/chapterdownload", params, {
         referer = "https://weread.qq.com/",
     })
     if book_type == "txt" then
-        local text = text_chapter_file(extract_tar(body), book_id, chapter_uid)
-        if not text then error("TXT chapter archive did not contain the requested chapter") end
-        return { text = text, format = "txt" }
+        local entries = extract_tar(body)
+        local payloads = {}
+        for _, chapter in ipairs(chapters) do
+            local uid = chapter.chapterUid or chapter.chapterId
+            local text = text_chapter_file(entries, book_id, uid)
+            if not text then
+                error("TXT chapter archive did not contain chapter " .. tostring(uid))
+            end
+            payloads[tostring(uid)] = { text = text, format = "txt" }
+        end
+        return payloads
     end
     local encryptkey
     for name, value in pairs(headers or {}) do
@@ -402,24 +461,52 @@ function NativeChapter.fetch(client, book, chapter, json_decode, vid)
     local aes_key, aes_iv = repeated_vid_key(vid)
     local zip_password = aes_cbc_decrypt(base64_decode(encryptkey), aes_key, aes_iv)
     local entries = extract_zip(body, zip_password)
-    local raw_xhtml, xhtml_name = chapter_file(entries, chapter_uid, json_decode)
-    if not raw_xhtml then error("chapter archive did not contain the requested chapter") end
+    local chapters_by_uid, chapter_files = {}, {}
+    for _, chapter in ipairs(chapters) do
+        local uid = chapter.chapterUid or chapter.chapterId
+        local xhtml, xhtml_names = chapter_file(
+            entries, uid, json_decode, book_id, #chapters == 1)
+        if not xhtml then
+            error("chapter archive did not contain chapter " .. tostring(uid))
+        end
+        chapters_by_uid[tostring(uid)] = {
+            xhtml = xhtml,
+            format = "epub",
+        }
+        for _, name in ipairs(xhtml_names) do chapter_files[name] = true end
+    end
     local css
     for name, value in pairs(entries) do
         if name:lower():match("%.css$") then css = decrypt_file_if_needed(value, book_id); break end
     end
     local assets = {}
     for name, value in pairs(entries) do
-        if name ~= xhtml_name and not name:lower():match("%.css$") then
+        if not chapter_files[name] and name ~= "info.txt"
+            and not name:lower():match("%.css$") then
             assets[#assets + 1] = { name = name:match("([^/]+)$") or name, data = value }
         end
     end
-    return {
-        xhtml = decrypt_file_if_needed(raw_xhtml, book_id),
-        css = css,
-        assets = assets,
-        format = "epub",
-    }
+    for _, payload in pairs(chapters_by_uid) do
+        payload.css = css
+        local chapter_assets = {}
+        for _, asset in ipairs(assets) do
+            local leaf = tostring(asset.name or ""):match("([^/]+)$")
+            if leaf and leaf ~= "" and payload.xhtml:find(leaf, 1, true) then
+                chapter_assets[#chapter_assets + 1] = asset
+            end
+        end
+        payload.assets = #chapter_assets > 0 and chapter_assets or assets
+    end
+    return chapters_by_uid
+end
+
+function NativeChapter.fetch(client, book, chapter, json_decode, vid)
+    local uid = chapter and (chapter.chapterUid or chapter.chapterId)
+    if uid == nil then error("book id and chapter uid are required") end
+    local payloads = NativeChapter.fetch_batch(client, book, { chapter }, json_decode, vid)
+    local payload = payloads[tostring(uid)]
+    if not payload then error("chapter archive did not contain the requested chapter") end
+    return payload
 end
 
 return NativeChapter

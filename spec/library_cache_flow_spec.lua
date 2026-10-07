@@ -2,7 +2,16 @@ package.path = "./?.lua;" .. package.path
 
 local existing_paths = {}
 local catalog_save_count = 0
+local detail_view_data
 local function empty_module() return {} end
+package.preload["weread.ui.book_detail_view"] = function()
+    return {
+        show = function(data)
+            detail_view_data = data
+            return { id = "book-detail" }
+        end,
+    }
+end
 package.preload["weread.lib.book_reviews"] = function()
     return { format_date = function() return "" end }
 end
@@ -63,6 +72,8 @@ local shown_book
 local opened_path
 local single_download_options
 local single_download_refreshed = false
+local requested_chapter
+local downloaded_options
 local host = {
     settings = {
         get = function(_self, key, default)
@@ -90,9 +101,15 @@ local host = {
     showBookMenu = function(_self, book) shown_book = book end,
     getFullBookCachePath = function(_self, book) return book.full_path end,
     openFile = function(_self, path) opened_path = path end,
-    confirmAndDownloadChapters = function(_self, _book, _chapters, _suffix, options)
-        single_download_options = options
-    end,
+    bookRecordHasDownload = function() return false end,
+    safeCallback = function(_self, _label, callback) return callback end,
+    downloader = {
+        promotePrefetch = function() return false end,
+        start = function(_self, _book, chapters, _suffix, options)
+            requested_chapter = chapters[1]
+            downloaded_options = options
+        end,
+    },
     showInfo = function() end,
     requireLogin = function() return true end,
     runOnlineTask = function(_self, _label, callback) callback() return true end,
@@ -138,23 +155,50 @@ expect(catalog_save_count == 2,
 
 local partial = {
     book_id = "42",
-    chapter_uid = 3,
+    chapter_uid = 2,
     chapters = {
-        { chapterUid = 1 }, { chapterUid = 2 }, { chapterUid = 3 },
-        { chapterUid = 4 }, { chapterUid = 5 },
+        { chapterUid = 1, chapterIdx = 1, wordCount = 100 },
+        { chapterUid = 2, chapterIdx = 2, wordCount = 100 },
+        { chapterUid = 3, chapterIdx = 3, wordCount = 100 },
+        { chapterUid = 4, chapterIdx = 4, wordCount = 100 },
+        { chapterUid = 5, chapterIdx = 5, wordCount = 100 },
     },
-    cached_chapters = { ["2"] = "/cache/2.epub", ["4"] = "/cache/4.epub" },
+    cached_chapters = {
+        ["2"] = "/cache/2.epub",
+        ["3"] = "/cache/3.epub",
+        ["4"] = "/cache/4.epub",
+    },
 }
 existing_paths["/cache/2.epub"] = true
+existing_paths["/cache/3.epub"] = true
 existing_paths["/cache/4.epub"] = true
-host:openBookForReading(partial)
-expect(opened_path == "/cache/2.epub",
-    "equal-distance cached chapter did not prefer the preceding chapter")
-
-partial.chapter_uid = 4
+partial.last_local_position = { chapter_uid = 4, chapter_idx = 4 }
 host:openBookForReading(partial)
 expect(opened_path == "/cache/4.epub",
-    "exact cached progress chapter was not selected")
+    "local reading position did not take priority over WeRead cloud progress")
+
+partial.last_local_position = nil
+partial.chapter_uid = 3
+partial.chapter_idx = 3
+host:openBookForReading(partial)
+expect(opened_path == "/cache/3.epub",
+    "WeRead cloud chapter was not used without a local reading position")
+
+partial.chapter_uid = nil
+partial.chapter_idx = nil
+partial.progress = 65
+host:openBookForReading(partial)
+expect(opened_path == "/cache/4.epub",
+    "WeRead cloud percentage did not resolve to a chapter")
+
+partial.progress = nil
+opened_path = nil
+requested_chapter = nil
+downloaded_options = nil
+host:openBookForReading(partial)
+expect(requested_chapter == partial.chapters[1]
+        and downloaded_options and downloaded_options.open_on_complete == true,
+    "a book without local or cloud progress did not start with chapter one")
 
 partial.full_path = "/cache/full.epub"
 existing_paths[partial.full_path] = true
@@ -165,10 +209,27 @@ expect(opened_path == partial.full_path,
 host:downloadChapterAndRead(partial, partial.chapters[3], function()
     single_download_refreshed = true
 end)
+single_download_options = downloaded_options
 expect(single_download_options and single_download_options.single_chapter == true,
-    "single chapter download keeps single-chapter mode")
+    "reading a chapter keeps single-chapter download mode")
+expect(single_download_options.open_on_complete == true,
+    "a chapter selected for reading was not configured to open after download")
 single_download_options.on_complete(true, "/cache/3.epub")
 expect(single_download_refreshed,
     "single chapter completion did not notify the chapter list")
+
+local no_cache_book = {
+    book_id = "43",
+    title = "Not downloaded yet",
+    chapters = { { chapterUid = 1, title = "One" } },
+}
+books["43"] = no_cache_book
+Library.showBookMenu(host, no_cache_book)
+local read_action
+for _, action in ipairs(detail_view_data.bottom_actions) do
+    if action.text == "▤ Read" then read_action = action end
+end
+expect(read_action and read_action.enabled ~= false,
+    "the Read action was disabled before the first chapter was downloaded")
 
 print(("library_cache_flow_spec: %d checks"):format(checks))

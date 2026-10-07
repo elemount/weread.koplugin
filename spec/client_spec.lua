@@ -110,7 +110,7 @@ requests, timeout_calls, reset_count = {}, {}, 0
 responses[#responses + 1] = {
     body = "ok",
     code = 200,
-    headers = { ["Set-Cookie"] = "wr_rt=new-refresh-token; Path=/" },
+    headers = { ["Set-Cookie"] = "wr_rt=XXX-refresh-token; Path=/" },
 }
 local body, code = client:request({
     url = "https://weread.qq.com/resource/test",

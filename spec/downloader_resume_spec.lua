@@ -11,6 +11,7 @@ end
 
 local scheduled = {}
 local fetched = {}
+local fetched_batches = {}
 local checkpointed = {}
 local streamed_bodies
 local saved_chapters
@@ -111,10 +112,27 @@ package.preload["weread.lib.content"] = function()
             end
             return completed
         end,
-        fetch_single_chapter_source = function(_client, _settings, _book, chapter)
+        chapter_download_batch_size = function() return 5 end,
+        prefetch_chapter_sources = function(_client, _book, batch)
+            local payloads = {}
+            local batch_uids = {}
+            for _, chapter in ipairs(batch) do
+                fetched[#fetched + 1] = chapter.chapterUid
+                batch_uids[#batch_uids + 1] = chapter.chapterUid
+                payloads[tostring(chapter.chapterUid)] = {
+                    xhtml = "<p>chapter " .. tostring(chapter.chapterUid) .. "</p>",
+                }
+            end
+            fetched_batches[#fetched_batches + 1] = batch_uids
+            return payloads
+        end,
+        fetch_single_chapter_source = function(
+            _client, _settings, _book, chapter, _state, source_payload)
+            if source_payload then return source_payload.xhtml, source_payload end
             fetched[#fetched + 1] = chapter.chapterUid
             return "<p>chapter " .. tostring(chapter.chapterUid) .. "</p>"
         end,
+        release_chapter_source = function() end,
         finalize_single_chapter_content = function(_client, _settings, _book, _chapter, xhtml)
             return xhtml, {}
         end,
@@ -170,6 +188,11 @@ local downloader = Downloader:new{
 local chapters = {
     { chapterUid = 1, title = "One" },
     { chapterUid = 2, title = "Two" },
+    { chapterUid = 3, title = "Three" },
+    { chapterUid = 4, title = "Four" },
+    { chapterUid = 5, title = "Five" },
+    { chapterUid = 6, title = "Six" },
+    { chapterUid = 7, title = "Seven" },
 }
 expect(downloader:start({ book_id = "book", title = "Book" }, chapters, "full", {
     silent_completion = true,
@@ -180,8 +203,12 @@ while #scheduled > 0 do
     callback()
 end
 
-expect(#fetched == 1 and fetched[1] == 2,
-    "resume should fetch only the unfinished chapter")
+expect(#fetched == 6 and fetched[1] == 2 and fetched[6] == 7,
+    "resume should fetch only unfinished chapters")
+expect(#fetched_batches == 2 and #fetched_batches[1] == 5
+        and fetched_batches[1][1] == 2 and fetched_batches[1][5] == 6
+        and #fetched_batches[2] == 1 and fetched_batches[2][1] == 7,
+    "resume did not reuse five-chapter batches across chapter processing")
 expect(#checkpointed >= 1 and checkpointed[1].uid == 2
     and checkpointed[1].index == 2,
     "newly downloaded chapter was not checkpointed at its catalog index")

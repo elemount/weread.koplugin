@@ -7,10 +7,8 @@ local External = require("weread.lib.external_annotations")
 local ShelfGroups = require("weread.lib.shelf_groups")
 local InputDialog = require("ui/widget/inputdialog")
 local logger = require("weread.lib.logger")
-local ProgressbarDialog = require("ui/widget/progressbardialog")
 local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
-local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
@@ -347,10 +345,10 @@ function M:fetchVisibleShelfCovers(view, items, options)
 end
 
 
-function M:showShelfView(mode, keyword, old_view, options)
+function M:showShelfView(_mode, keyword, old_view, options)
     local LibraryView = require("weread.ui.library_view")
     options = options or {}
-    mode = "books"
+    local mode = "books"
     options.mode = mode
     options.keyword = keyword
     local skip_cover_fetch_once = options.skip_cover_fetch_once == true
@@ -839,7 +837,6 @@ function M:showBookMenu(book)
         },
         {
             text = _("▤ Read"),
-            enabled = has_cache,
             callback = self:safeCallback(_("Read"), function()
                 self:openBookForReading(book)
             end),
@@ -1212,9 +1209,9 @@ function M:openCachedBook(book)
     self:openFile(self:getFullBookCachePath(book))
 end
 
--- Read offline from the best available cache. A complete EPUB wins. Otherwise
--- choose the cached chapter nearest to the last known chapter/progress, with a
--- slight preference for the preceding chapter when distances are equal.
+-- Open the book for reading. A complete EPUB wins; otherwise resume at the
+-- chapter recorded in KOReader's local reading position, downloading it on
+-- demand when it is not cached yet. A new book starts at chapter one.
 function M:openBookForReading(book)
     local full_path = self:getFullBookCachePath(book)
     if file_exists(full_path) then
@@ -1231,56 +1228,74 @@ function M:openBookForReading(book)
     if type(chapters) ~= "table" then
         chapters = Content.load_catalog_cache(self.client, self.settings, book)
     end
-
-    local candidates = {}
-    local target_index
-    if type(chapters) == "table" then
-        for index, chapter in ipairs(chapters) do
-            local uid = tostring(chapter.chapterUid or chapter.chapterId or index)
-            local path = book.cached_chapters and book.cached_chapters[uid]
-            if file_exists(path) then
-                candidates[#candidates + 1] = { index = index, path = path }
+    if type(chapters) == "table" and #chapters > 0 then
+        local local_position = book.last_local_position
+        local local_uid = type(local_position) == "table"
+            and (local_position.current_chapter_uid or local_position.chapter_uid)
+        local local_chapter_idx = type(local_position) == "table"
+            and tonumber(local_position.chapter_idx) or nil
+        local function index_for_chapter(uid, chapter_idx)
+            for index, chapter in ipairs(chapters) do
+                local chapter_uid = chapter.chapterUid or chapter.chapterId
+                if uid ~= nil and tostring(chapter_uid or "") == tostring(uid) then
+                    return index
+                end
             end
-            if book.chapter_uid ~= nil
-                and uid == tostring(book.chapter_uid) then
-                target_index = index
-            elseif target_index == nil and book.chapter_idx ~= nil
-                and tonumber(chapter.chapterIdx or chapter.chapterIndex) == tonumber(book.chapter_idx) then
-                target_index = index
+            for index, chapter in ipairs(chapters) do
+                local catalog_idx = tonumber(chapter.chapterIdx or chapter.chapterIndex)
+                if chapter_idx and catalog_idx == chapter_idx then
+                    return index
+                end
             end
+            return nil
         end
-        if not target_index and tonumber(book.progress) then
-            local progress = math.max(0, math.min(100, tonumber(book.progress)))
-            target_index = math.floor(progress / 100 * math.max(0, #chapters - 1)) + 1
-        end
-    end
 
-    if #candidates > 0 then
-        target_index = target_index or candidates[1].index
-        table.sort(candidates, function(left, right)
-            local left_distance = math.abs(left.index - target_index)
-            local right_distance = math.abs(right.index - target_index)
-            if left_distance ~= right_distance then return left_distance < right_distance end
-            local left_precedes = left.index <= target_index
-            local right_precedes = right.index <= target_index
-            if left_precedes ~= right_precedes then return left_precedes end
-            return left.index < right.index
-        end)
-        self:openFile(candidates[1].path)
+        local function index_for_percent(percent)
+            if not tonumber(percent) then return nil end
+            local fraction = math.max(0, math.min(100, tonumber(percent))) / 100
+            local total_words = 0
+            for _index, chapter in ipairs(chapters) do
+                total_words = total_words + math.max(0,
+                    tonumber(chapter.wordCount or chapter.word_count) or 0)
+            end
+            if total_words > 0 then
+                local target_words = fraction * total_words
+                local seen_words = 0
+                for index, chapter in ipairs(chapters) do
+                    seen_words = seen_words + math.max(0,
+                        tonumber(chapter.wordCount or chapter.word_count) or 0)
+                    if target_words < seen_words or index == #chapters then
+                        return index
+                    end
+                end
+            else
+                return math.floor(fraction * (#chapters - 1)) + 1
+            end
+            return nil
+        end
+
+        -- Resume from KOReader's saved chapter first. If there is no usable
+        -- local position, use WeRead's saved cloud chapter/progress; a new
+        -- book with neither position starts at the first chapter.
+        local target_index = index_for_chapter(local_uid, local_chapter_idx)
+            or index_for_percent(type(local_position) == "table"
+                and local_position.percent)
+        if not target_index then
+            target_index = index_for_chapter(book.chapter_uid, book.chapter_idx)
+                or index_for_percent(book.progress)
+        end
+
+        self:openChapter(book, chapters[target_index or 1])
         return true
     end
-
-    local fallback_paths = {}
-    for uid, path in pairs(book.cached_chapters or {}) do
-        if file_exists(path) then fallback_paths[#fallback_paths + 1] = { uid = tostring(uid), path = path } end
-    end
-    table.sort(fallback_paths, function(left, right) return left.uid < right.uid end)
-    if fallback_paths[1] then
-        self:openFile(fallback_paths[1].path)
-        return true
-    end
-    self:showInfo(_("No cached file."))
-    return false
+    self:loadChapters(book, function(loaded_chapters)
+        if type(loaded_chapters) == "table" and #loaded_chapters > 0 then
+            self:openBookForReading(book)
+        else
+            self:showInfo(_("No readable chapter found"))
+        end
+    end)
+    return true
 end
 
 -- Open a chapter, preferring its cached file and falling back to a download.
@@ -1348,8 +1363,13 @@ function M:openProgressTargetChapter(book, chapter)
 end
 
 function M:downloadChapterAndRead(book, chapter, on_downloaded)
-    self:confirmAndDownloadChapters(book, { chapter }, "chapter", {
+    -- Selecting a chapter to read (including the next-chapter action at the
+    -- end of a document) is already an explicit request to open it. Download
+    -- just this chapter and hand it straight to KOReader when it is ready;
+    -- keep confirmation for download-only actions and full-book downloads.
+    self.downloader:start(book, { chapter }, "chapter", {
         single_chapter = true,
+        open_on_complete = true,
         on_complete = function(ok, path)
             if ok and on_downloaded then on_downloaded(path) end
         end,

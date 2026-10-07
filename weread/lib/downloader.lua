@@ -47,7 +47,8 @@ local function display_error(err)
 end
 
 local BOOK_SNAPSHOT_FIELDS = {
-    "book_id", "title", "author", "version", "format",
+    "book_id", "title", "author", "version", "format", "bookType",
+    "type", "book_type", "category", "isComic", "is_comic",
     "chapter_uid", "chapter_idx", "chapter_offset", "progress", "summary",
     "_content_format", "cache_dir",
 }
@@ -108,6 +109,10 @@ function Downloader:_cleanupWorkspace(dl)
     dl.workspace = nil
     if dl.state then dl.state.workspace = nil end
     Content.cleanup_download_workspace(workspace)
+end
+
+function Downloader:_clearChapterBatch(dl)
+    if dl then dl.batch_payloads = nil end
 end
 
 -- A resumable full-book workspace is intentionally retained after a failure,
@@ -184,6 +189,10 @@ function Downloader:_notifyCompletion(dl, ok, value)
 end
 
 function Downloader:_finishJob(dl)
+    self:_clearChapterBatch(dl)
+    if dl and dl.current and dl.current.chapter then
+        Content.release_chapter_source(dl.book, dl.current.chapter)
+    end
     if self._active_job == dl then
         self._active_job = nil
     end
@@ -595,6 +604,7 @@ function Downloader:start(book, chapters, suffix, options)
         completed = {},
         completed_count = 0,
         annotation_failed_batches = 0,
+        batch_payloads = nil,
         footnote_scans = {},
         footnote_stats = {
             candidates = 0,
@@ -748,6 +758,11 @@ function Downloader:_failChapter(dl, err)
     if dl.footnote_scans then
         dl.footnote_scans[uid] = nil
     end
+    if dl.batch_payloads then
+        dl.batch_payloads[uid] = nil
+        if next(dl.batch_payloads) == nil then dl.batch_payloads = nil end
+    end
+    Content.release_chapter_source(dl.book, chapter)
     logger.warn("chapter download failed:",
         "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
         "chapter_uid=", uid, "error=", log_error(err))
@@ -968,7 +983,8 @@ function Downloader:_finishChapter(dl)
     local ok, result = pcall(function()
         local function finalize()
             local xhtml, assets = Content.finalize_single_chapter_content(
-                self.client, self.settings, dl.book, chapter, dl.current.xhtml, dl.state)
+                self.client, self.settings, dl.book, chapter, dl.current.xhtml,
+                dl.state, dl.current.source_payload)
             return { xhtml = xhtml, assets = assets, state = dl.state }
         end
         if cache.download_book_images then return self:_runInterruptible(dl, finalize) end
@@ -1005,6 +1021,11 @@ function Downloader:_finishChapter(dl)
         "chapter_assets=", tostring(#(chapter_assets or {})),
         "total_asset_bytes=", tostring(dl.asset_bytes or 0),
         "lua_kb=", string.format("%.1f", collectgarbage("count")))
+    if dl.batch_payloads then
+        dl.batch_payloads[uid] = nil
+        if next(dl.batch_payloads) == nil then dl.batch_payloads = nil end
+    end
+    Content.release_chapter_source(dl.book, chapter)
     dl.current = nil
     dl.annotation = nil
     dl.index = dl.index + 1
@@ -1316,12 +1337,40 @@ function Downloader:_step(dl)
         T(_("Downloading chapter %1/%2: %3"), tostring(dl.index), tostring(dl.total),
             chapter.title or tostring(chapter.chapterUid)),
         dl.index - 1)
+    local uid = tostring(chapter.chapterUid or chapter.chapterId or dl.index)
     local started = time.now()
     local ok, result = pcall(function()
         return self:_runInterruptible(dl, function()
-            local xhtml = Content.fetch_single_chapter_source(
-                self.client, self.settings, dl.book, chapter, dl.state)
-            return { xhtml = xhtml, state = dl.state, book = book_snapshot(dl.book) }
+            local batch_payloads = dl.batch_payloads
+            local source_payload = batch_payloads and batch_payloads[uid] or nil
+            local fetched_batch = false
+            if not source_payload and #dl.chapters > 1 and not dl.single_chapter then
+                local batch, limit = {}, Content.chapter_download_batch_size(dl.book)
+                for chapter_index = dl.index, dl.total do
+                    if not (dl.resumable and dl.completed[chapter_index]) then
+                        batch[#batch + 1] = dl.chapters[chapter_index]
+                        if #batch >= limit then break end
+                    end
+                end
+                if #batch == 0 then batch[1] = chapter end
+                batch_payloads = Content.prefetch_chapter_sources(
+                    self.client, dl.book, batch, dl.resumable)
+                source_payload = batch_payloads[uid]
+                if not source_payload then
+                    error("batched chapter response omitted chapter " .. uid)
+                end
+                fetched_batch = true
+            end
+            local xhtml, current_payload = Content.fetch_single_chapter_source(
+                self.client, self.settings, dl.book, chapter, dl.state,
+                source_payload)
+            return {
+                xhtml = xhtml,
+                source_payload = current_payload,
+                batch_payloads = fetched_batch and batch_payloads or nil,
+                state = dl.state,
+                book = book_snapshot(dl.book),
+            }
         end)
     end)
     if dl.cancelled then self:_step(dl); return end
@@ -1336,7 +1385,6 @@ function Downloader:_step(dl)
     if dl.chapter_source_retries then
         dl.chapter_source_retries[tostring(chapter.chapterUid or dl.index)] = nil
     end
-    local uid = tostring(chapter.chapterUid or dl.index)
     local scan_ok, scan = pcall(Footnotes.scan_chapter, xhtml, chapter)
     dl.footnote_scans = dl.footnote_scans or {}
     if scan_ok then
@@ -1345,7 +1393,12 @@ function Downloader:_step(dl)
         logger.warn("footnote scan failed; chapter will keep original footnote markup:",
             "chapter_uid=", uid, "error=", log_error(scan))
     end
-    dl.current = { chapter = chapter, xhtml = xhtml }
+    if result.batch_payloads then dl.batch_payloads = result.batch_payloads end
+    dl.current = {
+        chapter = chapter,
+        xhtml = xhtml,
+        source_payload = result.source_payload,
+    }
     self:_finishChapter(dl)
 end
 

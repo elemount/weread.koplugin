@@ -1013,12 +1013,25 @@ function Content.rewrite_image_sources(xhtml, src_map)
     return xhtml
 end
 
-local function native_chapter_assets(client, book, chapter, used_names, asset_dir)
+local function native_chapter_assets(client, book, chapter, used_names, asset_dir, source_payload)
     used_names = used_names or {}
+    local chapter_uid = tostring(chapter.chapterUid or chapter.chapterId)
     local cache = native_chapter_cache[book]
-    local payload = cache and cache.uid == tostring(chapter.chapterUid or chapter.chapterId)
-        and cache.payload or nil
+    if not cache then
+        cache = { payloads = {} }
+        native_chapter_cache[book] = cache
+    end
+    cache.payloads = cache.payloads or {}
+    if source_payload then cache.payloads[chapter_uid] = source_payload end
+    local payload = source_payload
+        or (cache and cache.payloads and cache.payloads[chapter_uid])
     if not payload then return {}, {} end
+    cache.asset_cache = cache.asset_cache or {}
+    local chapter_cache = cache.asset_cache[chapter_uid]
+    if not chapter_cache then
+        chapter_cache = {}
+        cache.asset_cache[chapter_uid] = chapter_cache
+    end
     local source_assets = {}
     for _, entry in ipairs(payload.assets or {}) do
         source_assets[#source_assets + 1] = {
@@ -1028,15 +1041,15 @@ local function native_chapter_assets(client, book, chapter, used_names, asset_di
         }
     end
     if chapter.tar and chapter.tar ~= "" then
-        if not cache.image_tar_assets then
+        if not chapter_cache.image_tar_assets then
             local ok, tar_assets = pcall(NativeChapter.fetch_image_tar, client, chapter)
             if ok then
-                cache.image_tar_assets = tar_assets
+                chapter_cache.image_tar_assets = tar_assets
             else
                 logger.warn("chapter image archive:", tostring(tar_assets))
             end
         end
-        for _, entry in ipairs(cache.image_tar_assets or {}) do
+        for _, entry in ipairs(chapter_cache.image_tar_assets or {}) do
             source_assets[#source_assets + 1] = {
                 name = entry.name,
                 data = entry.data,
@@ -1087,14 +1100,14 @@ local function native_chapter_assets(client, book, chapter, used_names, asset_di
     return assets, src_map
 end
 
-function Content.download_chapter_assets(client, book, chapter, used_names)
-    native_payload(client, book, chapter)
-    return native_chapter_assets(client, book, chapter, used_names)
+function Content.download_chapter_assets(client, book, chapter, used_names, source_payload)
+    if not source_payload then native_payload(client, book, chapter) end
+    return native_chapter_assets(client, book, chapter, used_names, nil, source_payload)
 end
 
-function Content.download_chapter_assets_to_files(client, book, chapter, used_names, workspace)
-    native_payload(client, book, chapter)
-    return native_chapter_assets(client, book, chapter, used_names, workspace.asset_dir)
+function Content.download_chapter_assets_to_files(client, book, chapter, used_names, workspace, source_payload)
+    if not source_payload then native_payload(client, book, chapter) end
+    return native_chapter_assets(client, book, chapter, used_names, workspace.asset_dir, source_payload)
 end
 
 local native_info_loaded = setmetatable({}, { __mode = "k" })
@@ -1124,6 +1137,8 @@ function Content.ensure_book_info(client, book)
         book.version = info.version or info.bookVersion or book.version or book.bookVersion
         book.format = info.format or book.format
         book.bookType = info.bookType or book.bookType
+        book.type = info.type or info.book_type or book.type or book.book_type
+        book.category = info.category or book.category
     end
     return book
 end
@@ -1141,15 +1156,63 @@ native_payload = function(client, book, chapter)
     if chapter_uid == "" then error("chapter is required") end
     Content.ensure_book_info(client, book)
     local cache = native_chapter_cache[book]
-    if cache and cache.uid == chapter_uid then return cache.payload end
+    if cache and cache.payloads and cache.payloads[chapter_uid] then
+        cache.uid = chapter_uid
+        cache.payload = cache.payloads[chapter_uid]
+        return cache.payload
+    end
     local auth = client.settings and client.settings:get("auth", {}) or {}
     local account = client.settings and client.settings:get("account", {}) or {}
     local vid = auth.vid
     if type(vid) ~= "string" or vid == "" then vid = account.user_vid end
     local payload = NativeChapter.fetch(client, book, chapter,
         function(encoded) return client:json_decode(encoded) end, vid)
-    native_chapter_cache[book] = { uid = chapter_uid, payload = payload }
+    cache = cache or { payloads = {} }
+    cache.payloads = cache.payloads or {}
+    cache.payloads[chapter_uid] = payload
+    cache.uid = chapter_uid
+    cache.payload = payload
+    native_chapter_cache[book] = cache
     return payload
+end
+
+function Content.chapter_download_batch_size(book)
+    local format = tostring(book and (book.format or book.bookType) or ""):lower()
+    local category = tostring(book and book.category or "")
+    if (book and (tonumber(book.type) == 5 or tonumber(book.book_type) == 5
+        or book.isComic == true or book.is_comic == true))
+        or format:find("comic", 1, true)
+        or format:find("manga", 1, true)
+        or format:find("漫画", 1, true)
+        or category:find("漫画", 1, true) then
+        return 1
+    end
+    if format:find("epub", 1, true) then return 5 end
+    return 25
+end
+
+function Content.prefetch_chapter_sources(client, book, chapters, offline)
+    if type(chapters) ~= "table" or #chapters == 0 then return {} end
+    Content.ensure_book_info(client, book)
+    local auth = client.settings and client.settings:get("auth", {}) or {}
+    local account = client.settings and client.settings:get("account", {}) or {}
+    local vid = auth.vid
+    if type(vid) ~= "string" or vid == "" then vid = account.user_vid end
+    return NativeChapter.fetch_batch(client, book, chapters,
+        function(encoded) return client:json_decode(encoded) end, vid,
+        { offline = offline == true })
+end
+
+function Content.release_chapter_source(book, chapter)
+    local uid = tostring(chapter and (chapter.chapterUid or chapter.chapterId) or "")
+    local cache = native_chapter_cache[book]
+    if not cache or not cache.payloads or uid == "" then return end
+    cache.payloads[uid] = nil
+    if cache.uid == uid then
+        cache.uid = nil
+        cache.payload = nil
+    end
+    if cache.asset_cache then cache.asset_cache[uid] = nil end
 end
 
 function Content.txt_to_xhtml(text)
@@ -1326,7 +1389,6 @@ function Content.register_annotation_document(book, path, chapters)
 end
 
 function Content.fetch_chapter_epub(client, settings, book, chapter)
-    local book_id = book.book_id or book.bookId
     local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
     Content.cache_annotation_source(settings, book, chapter, xhtml)
     local css = Content.fetch_chapter_css(client, settings, book, chapter)
@@ -1375,17 +1437,34 @@ end
 
 -- Split chapter downloading around annotation fetching so the UI can request
 -- thought batches cooperatively instead of blocking inside Thoughts.apply().
-function Content.fetch_single_chapter_source(client, settings, book, chapter, state)
+function Content.fetch_single_chapter_source(client, settings, book, chapter, state, source_payload)
     state = state or {}
-    local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
-    Content.cache_annotation_source(settings, book, chapter, xhtml)
-    if not state.css then
-        state.css = Content.fetch_chapter_css(client, settings, book, chapter)
+    local payload = source_payload or native_payload(client, book, chapter)
+    local xhtml
+    if payload.format == "txt" then
+        local plain = tostring(payload.text or ""):gsub("^\239\187\191", "")
+        book._content_format = "txt"
+        Content.cache_annotation_source(settings, book, chapter, plain, true)
+        xhtml = Content.txt_to_xhtml(plain)
+    else
+        if type(payload.xhtml) ~= "string" or payload.xhtml == "" then
+            error("native EPUB chapter response did not contain XHTML")
+        end
+        book._content_format = "epub"
+        xhtml = payload.xhtml
+        Content.cache_annotation_source(settings, book, chapter, xhtml)
     end
-    return xhtml
+    if not state.css and type(payload.css) == "string" then
+        local sanitized, removed = Content.sanitize_book_css(payload.css)
+        if removed > 0 then
+            logger.warn("removed ", removed, " hostile font-size:0 declarations from book css")
+        end
+        state.css = sanitized
+    end
+    return xhtml, payload
 end
 
-function Content.finalize_single_chapter_content(client, settings, book, chapter, xhtml, state)
+function Content.finalize_single_chapter_content(client, settings, book, chapter, xhtml, state, source_payload)
     state = state or {}
     local chapter_assets = {}
     local cache = settings:get("cache", {})
@@ -1394,10 +1473,11 @@ function Content.finalize_single_chapter_content(client, settings, book, chapter
         local tar_assets, src_map
         if state.workspace then
             tar_assets, src_map = Content.download_chapter_assets_to_files(
-                client, book, chapter, state.used_asset_names, state.workspace)
+                client, book, chapter, state.used_asset_names, state.workspace,
+                source_payload)
         else
             tar_assets, src_map = Content.download_chapter_assets(
-                client, book, chapter, state.used_asset_names)
+                client, book, chapter, state.used_asset_names, source_payload)
         end
         for _, asset in ipairs(tar_assets) do
             table.insert(chapter_assets, asset)

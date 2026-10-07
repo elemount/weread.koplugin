@@ -49,7 +49,6 @@ local function scan(fs, books, allowed, dry_run)
         fs = fs,
         books = books,
         allowed = allowed,
-        is_mp = is_mp,
         dry_run = dry_run,
         now = NOW,
     })
