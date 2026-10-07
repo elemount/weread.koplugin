@@ -97,7 +97,11 @@ end
 local function clear_cross_origin_headers(headers)
     for key in pairs(headers or {}) do
         local name = tostring(key):lower()
-        if name == "authorization" or name == "cookie" or name == "origin" then
+        -- Native WeRead credentials use custom header names rather than
+        -- Authorization. Never forward them to a different origin: resource
+        -- URLs that need CDN access must carry their own signed URL/token.
+        if name == "authorization" or name == "cookie" or name == "origin"
+            or name == "vid" or name == "accesstoken" then
             headers[key] = nil
         end
     end
@@ -715,13 +719,16 @@ function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
     local all_reviews = {}
     local batches = self:build_chapter_review_batches(ranges)
     local socket_ok, socket = pcall(require, "socket")
+    local failed_batches = {}
 
     for batch_index, batch in ipairs(batches) do
-        local ok, result = self:get_chapter_reviews_batch(book_id, chapter_uid, batch)
+        local ok, result, err = self:get_chapter_reviews_batch(book_id, chapter_uid, batch)
         if ok and type(result) == "table" and type(result.reviews) == "table" then
             for _, review in ipairs(result.reviews) do
                 all_reviews[#all_reviews + 1] = review
             end
+        else
+            failed_batches[#failed_batches + 1] = tostring(err or "invalid response")
         end
 
         if batch_index < #batches and socket_ok and socket.sleep then
@@ -729,6 +736,11 @@ function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
         end
     end
 
+    if #failed_batches > 0 then
+        return false, { reviews = all_reviews }, string.format(
+            "%d of %d review batches failed: %s",
+            #failed_batches, #batches, table.concat(failed_batches, "; "))
+    end
     return true, { reviews = all_reviews }
 end
 

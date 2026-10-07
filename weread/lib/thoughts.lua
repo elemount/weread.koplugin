@@ -93,8 +93,14 @@ function Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
 
     local thought_reviews
     if #ranges > 0 then
-        local ok_tr, tr_data = client:get_chapter_reviews(book_id, chapter_uid, ranges)
-        if ok_tr and type(tr_data) == "table" and #(tr_data.reviews or {}) > 0 then
+        local ok_tr, tr_data, err_tr = client:get_chapter_reviews(book_id, chapter_uid, ranges)
+        if not ok_tr then
+            logger.warn("some chapter reviews could not be fetched:", tostring(err_tr))
+        end
+        -- Keep successful batches when another batch fails; the client reports
+        -- the partial failure separately so it is no longer mistaken for a
+        -- complete response.
+        if type(tr_data) == "table" and #(tr_data.reviews or {}) > 0 then
             thought_reviews = tr_data.reviews
         end
     end
