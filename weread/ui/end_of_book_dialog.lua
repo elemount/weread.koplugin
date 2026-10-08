@@ -23,7 +23,8 @@ local M = {}
 --   opts.show_next_chapter : boolean — show the "next chapter" button
 --   opts.enable_* : boolean — whether each context-dependent action is enabled
 --   opts.annotations_visible : boolean — current annotation visibility state
---   callbacks             : { on_bookshelf, on_search, on_chapter_list, on_next,
+--   callbacks             : { on_bookshelf, on_search, on_chapter_list,
+--                             on_previous, on_next,
 --                             on_book_details, on_sync_progress,
 --                             on_toggle_annotations, on_close_book }
 -- Returns the dialog widget instance.
@@ -56,6 +57,13 @@ function M.show(opts, callbacks)
                 callback = function() dismiss_then(callbacks.on_chapter_list) end,
             },
         }
+        if opts.show_previous_chapter ~= false then
+            table.insert(nav_row, 1, {
+                text = _("Previous chapter"),
+                enabled = opts.enable_previous_chapter == true,
+                callback = function() dismiss_then(callbacks.on_previous) end,
+            })
+        end
         if opts.show_next_chapter then
             table.insert(nav_row, {
                 text = _("Next chapter"),
@@ -64,6 +72,15 @@ function M.show(opts, callbacks)
             })
         end
         table.insert(buttons, nav_row)
+    end
+
+    if opts.chapter_position then
+        table.insert(buttons, {
+            {
+                text = opts.chapter_position,
+                enabled = false,
+            },
+        })
     end
 
     -- Row 2: book details.

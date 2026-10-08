@@ -134,6 +134,10 @@ starts[1].options.on_complete(false, "offline")
 expect(#notices == 1
     and notices[1][1]:find("Network is not connected", 1, true) ~= nil,
     "offline prefetch reports a failure")
+expect(host._prefetch_failures
+        and host._prefetch_failures.book
+        and host._prefetch_failures.book["2"] == true,
+    "failed prefetch is retained for chapter-list feedback")
 expect(logs[#logs][1] == "warn", "prefetch failure is logged")
 
 cache.show_prefetch_notifications = false
@@ -142,6 +146,8 @@ host:maybePrefetchNextChapter("book")
 expect(starts[1].options.start_delay == 0.1,
     "silent prefetch does not pay the notification grace delay")
 starts[1].options.on_start()
+expect(not host._prefetch_failures.book,
+    "retrying a prefetch clears its stale failure state")
 starts[1].options.on_complete(false, "network error")
 expect(#notices == 1, "notification setting silences all prefetch notices")
 

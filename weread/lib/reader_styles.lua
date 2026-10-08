@@ -54,6 +54,39 @@ img {
     margin-left: auto;
     margin-right: auto;
 }
+.qrbodyPic {
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+.qqreader-fullimg,
+img[isfullpage="1"],
+img[isFullPage="1"] {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 90vh;
+    margin: 0 auto;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+img[keepFit="1"],
+img[keepfit="1"] {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 85vh;
+    margin: 0 auto;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+.eepub-single-image-title {
+    font-size: 0.85em;
+    line-height: 1.4;
+    text-align: center;
+    margin: 0.4em 0.4em 1em;
+}
 img.h-pic {
     display: inline;
     max-width: 100%;

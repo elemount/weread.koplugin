@@ -1050,17 +1050,26 @@ function M:showChapterList(book, on_close)
         -- captured when the chapter list was first opened.
         reloadBookCache()
         local rows = {}
+        local book_key = tostring(book.book_id or book.bookId or "")
+        local failed_prefetches = self._prefetch_failures
+            and self._prefetch_failures[book_key] or {}
         for _i, chapter in ipairs(chapters) do
             local chapter_uid = chapter.chapterUid or chapter.chapterId
+            local chapter_key = tostring(chapter_uid or "")
             local cached = book.cached_chapters
-                and book.cached_chapters[tostring(chapter_uid)]
+                and book.cached_chapters[chapter_key]
             if cached and not file_exists(cached) then
-                book.cached_chapters[tostring(chapter_uid)] = nil
+                book.cached_chapters[chapter_key] = nil
                 cached = nil
             end
+            local prefetching = self.downloader
+                and self.downloader:isPrefetching(book, chapter)
             rows[#rows + 1] = {
                 title = chapter.title or T(_("Chapter %1"), tostring(chapter_uid)),
                 status = cached and _("Cached")
+                    or prefetching and _("Prefetching")
+                    or failed_prefetches[chapter_key]
+                        and _("Prefetch failed")
                     or T(_("%1 words"), tostring(chapter.wordCount or 0)),
                 source = chapter,
             }
@@ -1309,6 +1318,10 @@ function M:openChapter(book, chapter, on_downloaded)
         -- dialog and opens the chapter as soon as the same task completes.
         return
     else
+        local book_key = tostring(book.book_id or book.bookId or "")
+        if self._prefetch_failures and self._prefetch_failures[book_key] then
+            self._prefetch_failures[book_key][tostring(chapter_uid)] = nil
+        end
         self:downloadChapterAndRead(book, chapter, on_downloaded)
     end
 end

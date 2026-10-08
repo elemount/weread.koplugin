@@ -11,6 +11,22 @@ local log_error = PluginUtil.log_error
 
 local M = {}
 
+local function set_prefetch_failure(self, book_id, chapter_uid, failed)
+    self._prefetch_failures = self._prefetch_failures or {}
+    local book_key = tostring(book_id or "")
+    local failures = self._prefetch_failures[book_key]
+    if failed then
+        failures = failures or {}
+        failures[tostring(chapter_uid or "")] = true
+        self._prefetch_failures[book_key] = failures
+    elseif failures then
+        failures[tostring(chapter_uid or "")] = nil
+        if next(failures) == nil then
+            self._prefetch_failures[book_key] = nil
+        end
+    end
+end
+
 -- KOReader v2026.03 assumes ReaderHighlight's visible box cache has already
 -- been populated when a tap arrives. During a fast document switch there is a
 -- short window after ReaderReady where the cache is still nil, and the native
@@ -243,6 +259,7 @@ function M:maybePrefetchNextChapter(book_id)
         silent_completion = true,
         offer_read = false,
         on_start = function()
+            set_prefetch_failure(self, book_id, next_uid, false)
             logger.info("started:",
                 "book_id=", tostring(book_id),
                 "chapter_uid=", next_uid,
@@ -252,6 +269,7 @@ function M:maybePrefetchNextChapter(book_id)
         end,
         on_complete = function(ok, value)
             if ok then
+                set_prefetch_failure(self, book_id, next_uid, false)
                 -- A promoted prefetch opens the new file immediately. Its
                 -- ReaderReady path can download source data for that file
                 -- when both prefetch switches are enabled, so
@@ -292,6 +310,7 @@ function M:maybePrefetchNextChapter(book_id)
                 "chapter_uid=", next_uid,
                 "title=", title,
                 "reason=", log_error(value))
+            set_prefetch_failure(self, book_id, next_uid, true)
             self:showPrefetchNotice(T(_("Next chapter prefetch failed: %1"), reason))
             if retry_requested then
                 local source_file = file

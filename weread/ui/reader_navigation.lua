@@ -3,6 +3,7 @@ local EndOfBookDialog = require("weread.ui.end_of_book_dialog")
 local PluginUtil = require("weread.lib.plugin_util")
 
 local _ = PluginUtil.tr
+local T = PluginUtil.T
 
 local M = {}
 
@@ -45,9 +46,10 @@ function M:showEndOfBookDialog(book_id)
         local chapter_info = { self:getChapterInfoFromFile(book, file_path) }
         current_idx, is_full_book = chapter_info[1], chapter_info[3]
     end
-    -- The chapter-nav row is shown only for single downloaded chapters (a mapped
-    -- current chapter that is not part of a full-book EPUB); "next chapter"
-    -- additionally requires a successor.
+    -- Chapter navigation is available only for a mapped single-chapter file.
+    -- Full-book EPUBs have their own TOC and are left to KOReader's navigation.
+    local is_single_chapter = current_idx ~= nil and not is_full_book
+    local previous_chapter = is_single_chapter and chapters[current_idx - 1] or nil
     local next_chapter = current_idx and not is_full_book
         and chapters[current_idx + 1] or nil
 
@@ -64,7 +66,12 @@ function M:showEndOfBookDialog(book_id)
     EndOfBookDialog.show({
         show_chapter_nav = true,
         show_next_chapter = true,
+        show_previous_chapter = true,
+        chapter_position = is_single_chapter
+            and T(_("Chapter %1 of %2"),
+                tostring(current_idx), tostring(#chapters)) or nil,
         enable_chapter_list = chapters ~= nil,
+        enable_previous_chapter = previous_chapter ~= nil,
         enable_next_chapter = next_chapter ~= nil,
         enable_book_details = book ~= nil,
         enable_sync_progress = is_regular_weread_book,
@@ -88,6 +95,15 @@ function M:showEndOfBookDialog(book_id)
                 self:openChapter(book, next_chapter)
             elseif is_regular_weread_book then
                 self:showTransientInfo(_("You have reached the last chapter."), 1)
+            else
+                show_context_required()
+            end
+        end,
+        on_previous = function()
+            if previous_chapter then
+                self:openChapter(book, previous_chapter)
+            elseif is_regular_weread_book then
+                self:showTransientInfo(_("You are at the first chapter."), 1)
             else
                 show_context_required()
             end

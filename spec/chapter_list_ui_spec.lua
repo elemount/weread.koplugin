@@ -88,6 +88,7 @@ local downloaded_options
 local returned_to_parent = false
 local opened_chapter
 local single_chapter_refresh
+local active_prefetch_uid
 local host = {
     safeCallback = function(_self, _label, callback) return callback end,
     loadChapters = function(_self, _book, callback) callback(chapters) end,
@@ -99,6 +100,11 @@ local host = {
         downloaded_options = options
     end,
     showTransientInfo = function() end,
+    downloader = {
+        isPrefetching = function(_self, _book, chapter)
+            return tostring(chapter.chapterUid) == tostring(active_prefetch_uid)
+        end,
+    },
     openChapter = function(_self, _book, chapter, on_downloaded)
         opened_chapter = chapter
         single_chapter_refresh = on_downloaded
@@ -121,6 +127,16 @@ expect(catalog_view_data.title == "Book" and #catalog_view_data.chapters == 7,
     "chapter catalog view receives the title and all chapters")
 expect(catalog_view_data.chapters[1].status == "100 words",
     "chapter catalog preserves the right-side word-count status")
+active_prefetch_uid = "2"
+host:showChapterList(book)
+expect(catalog_view_data.chapters[2].status == "Prefetching",
+    "chapter catalog shows an active prefetch")
+active_prefetch_uid = nil
+host._prefetch_failures = { ["book-1"] = { ["2"] = true } }
+host:showChapterList(book)
+expect(catalog_view_data.chapters[2].status == "Prefetch failed",
+    "chapter catalog keeps a failed prefetch visible for retry")
+host._prefetch_failures = nil
 expect(type(catalog_view_callbacks.on_refresh) == "function"
     and type(catalog_view_callbacks.on_select_download) == "function",
     "chapter catalog keeps refresh and multi-download actions")

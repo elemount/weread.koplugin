@@ -30,7 +30,10 @@ local callbacks = {
 Dialog.show({
     show_chapter_nav = true,
     show_next_chapter = true,
+    show_previous_chapter = true,
+    chapter_position = "Chapter 2 of 4",
     enable_chapter_list = true,
+    enable_previous_chapter = true,
     enable_next_chapter = false,
     enable_book_details = false,
     enable_sync_progress = true,
@@ -55,13 +58,18 @@ expect(sync_row and sync_row[1].text == "Sync progress now",
     "the row starts with immediate progress sync")
 expect(sync_row and sync_row[2].text == "Hide underlines and thoughts",
     "the row shows the current annotation toggle action")
-expect(shown.buttons[1][1].text == "Chapter list"
-        and shown.buttons[1][2].text == "Next chapter",
+expect(shown.buttons[1][1].text == "Previous chapter"
+        and shown.buttons[1][2].text == "Chapter list"
+        and shown.buttons[1][3].text == "Next chapter",
     "chapter actions stay visible in the global quick menu")
 expect(shown.buttons[1][1].enabled == true
-        and shown.buttons[1][2].enabled == false,
+        and shown.buttons[1][2].enabled == true
+        and shown.buttons[1][3].enabled == false,
     "chapter actions reflect their individual availability")
-expect(shown.buttons[2][1].enabled == false
+expect(shown.buttons[2][1].text == "Chapter 2 of 4"
+        and shown.buttons[2][1].enabled == false,
+    "chapter position is displayed as a non-action row")
+expect(shown.buttons[3][1].enabled == false
         and sync_row[1].enabled == true,
     "book details and progress sync reflect their availability")
 
