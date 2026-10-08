@@ -149,9 +149,28 @@ local function load_archive()
         const char *archive_error_string(struct archive *);
         int archive_read_free(struct archive *);
     ]])
-    for _, name in ipairs({ "archive", "libarchive.so", "libarchive.so.13", "libarchive.13.dylib" }) do
+    -- Prefer KOReader's loadlib helper so Kindle resolves the bundled
+    -- libs/libarchive.so.13 instead of the system /usr/lib/libarchive.so,
+    -- whose ABI can be incomplete for the reader APIs we need.
+    local function usable_library(lib)
+        return pcall(function() return lib.archive_read_new end)
+    end
+    if type(ffi.loadlib) == "function" then
+        local ok, lib = pcall(ffi.loadlib, "archive", "13")
+        if ok and usable_library(lib) then
+            archive_lib = { ffi = ffi, lib = lib }
+            return archive_lib
+        end
+    end
+    -- Only try explicit versioned/bundled names here. An unversioned
+    -- `ffi.load("archive")` may resolve to Kindle's /usr/lib/libarchive.so,
+    -- which can load successfully but lack the reader API.
+    for _, name in ipairs({ "libs/libarchive.so.13", "libarchive.so.13", "libarchive.13.dylib" }) do
         local ok, lib = pcall(ffi.load, name)
-        if ok then archive_lib = { ffi = ffi, lib = lib }; return archive_lib end
+        if ok and usable_library(lib) then
+            archive_lib = { ffi = ffi, lib = lib }
+            return archive_lib
+        end
     end
     local global_ok = pcall(function() return ffi.C.archive_read_new end)
     if global_ok then archive_lib = { ffi = ffi, lib = ffi.C }; return archive_lib end
