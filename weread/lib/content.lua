@@ -1371,10 +1371,53 @@ local function normalize_asset_path(path)
     return table.concat(parts, "/")
 end
 
+local css_asset_marker = "/* weread-internal: relative image URLs resolved */"
+
+local function rewrite_css_image_urls(css, src_map, stylesheet_relative)
+    if type(css) ~= "string" or css == "" then return css end
+    if stylesheet_relative and css:find(css_asset_marker, 1, true) then
+        return css
+    end
+    src_map = src_map or {}
+    local rewritten = tostring(css or ""):gsub("url%s*%(%s*([^%)]+)%s*%)", function(raw_url)
+        local value = raw_url:gsub("^%s+", ""):gsub("%s+$", "")
+        local quote = value:match("^(['\"])")
+        if quote and value:sub(-1) == quote then
+            value = value:sub(2, -2)
+        else
+            quote = ""
+        end
+        local clean = value:gsub("&amp;", "&")
+        if clean == "" or clean:match("^data:") or clean:match("^https?://")
+            or clean:match("^//") or clean:match("^#") or clean:match("^/") then
+            return "url(" .. quote .. value .. quote .. ")"
+        end
+        local suffix = clean:match("([?#].*)$") or ""
+        local path = normalize_asset_path(clean)
+        local key = path:match("([^/]+)$") or path
+        local href = src_map[path]
+        if href == nil then href = src_map[key] end
+        if type(href) ~= "string" or href == "" then
+            return "url(" .. quote .. value .. quote .. ")"
+        end
+        -- Asset URLs are stored relative to chapter XHTML. A stylesheet lives
+        -- one directory higher, so adjust for the generated EPUB package path.
+        if stylesheet_relative then href = href:gsub("^%.%./", "") end
+        return "url(" .. quote .. href .. suffix .. quote .. ")"
+    end)
+    return rewritten
+end
+
 function Content.rewrite_image_sources(xhtml, src_map)
     src_map = src_map or {}
+
     local function replace_attribute(boundary, name, spacing, quote, src)
-        if name:lower() ~= "src" then
+        local lower_name = name:lower()
+        if lower_name == "style" then
+            local rewritten = rewrite_css_image_urls(src, src_map, false)
+            return boundary .. name .. spacing .. quote .. rewritten .. quote
+        end
+        if lower_name ~= "src" then
             return boundary .. name .. spacing .. quote .. src .. quote
         end
         local clean = tostring(src or ""):gsub("&amp;", "&")
@@ -1398,6 +1441,16 @@ function Content.rewrite_image_sources(xhtml, src_map)
     end
     xhtml = xhtml:gsub("([^%w:_%-])([%w:_%-]+)(%s*=%s*)(['\"])(.-)%4", replace_attribute)
     return xhtml
+end
+
+-- Rewrite relative url() references in the book stylesheet to the images
+-- copied into OEBPS/images. APK EPUB parsing resolves these paths against each
+-- source CSS file; our generated EPUB has one package-level stylesheet.
+function Content.rewrite_stylesheet_image_sources(css, src_map)
+    if type(css) ~= "string" or css == "" then return css end
+    if css:find(css_asset_marker, 1, true) then return css end
+    local rewritten = rewrite_css_image_urls(css, src_map, true)
+    return rewritten .. "\n" .. css_asset_marker
 end
 
 local function native_chapter_assets(client, book, chapter, used_names, asset_dir, source_payload)
@@ -1931,6 +1984,7 @@ function Content.fetch_chapter_epub(client, settings, book, chapter)
         local src_map
         assets, src_map = Content.download_chapter_assets(client, book, chapter, used_names)
         xhtml = Content.rewrite_image_sources(xhtml, src_map)
+        css = Content.rewrite_stylesheet_image_sources(css, src_map)
     else
         xhtml = Content.rewrite_image_sources(xhtml, {})
     end
@@ -1956,6 +2010,7 @@ function Content.fetch_single_chapter_content(client, settings, book, chapter, s
     if cache.download_book_images then
         state.used_asset_names = state.used_asset_names or {}
         local tar_assets, src_map = Content.download_chapter_assets(client, book, chapter, state.used_asset_names)
+        state.css = Content.rewrite_stylesheet_image_sources(state.css, src_map)
         for _, asset in ipairs(tar_assets) do
             table.insert(chapter_assets, asset)
         end
@@ -2010,6 +2065,7 @@ function Content.finalize_single_chapter_content(client, settings, book, chapter
             tar_assets, src_map = Content.download_chapter_assets(
                 client, book, chapter, state.used_asset_names, source_payload)
         end
+        state.css = Content.rewrite_stylesheet_image_sources(state.css, src_map)
         for _, asset in ipairs(tar_assets) do
             table.insert(chapter_assets, asset)
         end
@@ -2047,6 +2103,7 @@ function Content.fetch_chapters_epub(client, settings, book, chapters, options)
                 table.insert(assets, asset)
             end
             xhtml = Content.rewrite_image_sources(xhtml, src_map)
+            css = Content.rewrite_stylesheet_image_sources(css, src_map)
         else
             xhtml = Content.rewrite_image_sources(xhtml, {})
         end

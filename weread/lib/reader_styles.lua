@@ -109,6 +109,12 @@ html, body {
 ]]
 
 function ReaderStyles.compose(book_css)
+    if type(book_css) == "string" then
+        -- content.lua keeps this checkpoint marker in resumable download CSS
+        -- so relative image URLs are not rewritten twice across chapters.
+        book_css = book_css:gsub(
+            "/%* weread%-internal: relative image URLs resolved %*/", "")
+    end
     local parts = { ReaderStyles.typography_css, ReaderStyles.image_css }
     if type(book_css) == "string" and book_css ~= "" then
         parts[#parts + 1] = book_css
