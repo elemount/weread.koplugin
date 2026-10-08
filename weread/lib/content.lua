@@ -1112,12 +1112,12 @@ local function opf_publication_date(value)
     return string.format("%04d-%02d-%02d", year, month, day)
 end
 
-local function opf_metadata(book, identifier)
+local function opf_metadata(book, identifier, title_override)
     local author = metadata_text(book.author)
     local publisher = metadata_text(book.publisher)
     local parts = {
         '<dc:identifier id="bookid">' .. xml_escape(identifier) .. "</dc:identifier>",
-        "<dc:title>" .. xml_escape(book.title or "WeRead") .. "</dc:title>",
+        "<dc:title>" .. xml_escape(title_override or book.title or "WeRead") .. "</dc:title>",
         '<dc:source>https://i.weread.qq.com/book/info?bookId='
             .. xml_escape(book.book_id or book.bookId or "") .. "</dc:source>",
     }
@@ -1156,12 +1156,18 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     local dir = Content.book_resolved_dir(settings, book_id, book)
     os.execute("mkdir -p " .. string.format("%q", dir))
     book.cache_dir = dir
-    local book_title = book.title or "WeRead"
+    local book_title = metadata_text(book.title)
+    if book_title == "" then book_title = "WeRead" end
+    local chapter_title = metadata_text(chapter and chapter.title)
+    if chapter_title == "" then
+        chapter_title = "Chapter " .. tostring(chapter and chapter.chapterUid or "chapter")
+    end
+    local library_title = book_title .. " - " .. chapter_title
     local language = opf_language(book)
     local language_attribute = language and (' lang="' .. xml_escape(language)
         .. '" xml:lang="' .. xml_escape(language) .. '"') or ""
-    local path = dir .. "/" .. filename_safe(book_title .. " - " .. (chapter.title or tostring(chapter.chapterUid or "chapter"))) .. ".epub"
-    local title = chapter.title or book.title or "WeRead"
+    local path = dir .. "/" .. filename_safe(library_title) .. ".epub"
+    local title = chapter_title
     local manifest_assets = {}
     for asset_index, asset in ipairs(assets or {}) do
         table.insert(manifest_assets, [[<item id="asset_]] .. tostring(asset_index) .. [[" href="]] .. xml_escape(asset.href) .. [[" media-type="]] .. xml_escape(asset.media_type) .. [["/>]])
@@ -1180,7 +1186,7 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     local opf = [[<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0" prefix="dcterms: http://purl.org/dc/terms/ marc: http://id.loc.gov/vocabulary/relators/">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-]] .. opf_metadata(book, "weread-" .. tostring(book_id) .. "-" .. tostring(chapter.chapterUid or "chapter")) .. [[
+]] .. opf_metadata(book, "weread-" .. tostring(book_id) .. "-" .. tostring(chapter.chapterUid or "chapter"), library_title) .. [[
 </metadata>
 <manifest>
 <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>

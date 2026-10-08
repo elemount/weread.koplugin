@@ -39,7 +39,6 @@ local defaults = {
         ignore_edge_thought_taps = true,
         -- Fraction of screen width on each side treated as the page-turn edge zone.
         edge_tap_ratio = 0.20,
-        max_size_mb = 1024,
     },
     thought_popup = {
         -- Thought popup height as a fraction of the screen height.
@@ -154,6 +153,10 @@ function Settings:new()
     end
     local cache = obj.store:readSetting("cache", deepcopy(defaults.cache))
     local cache_changed = false
+    if cache.max_size_mb ~= nil then
+        cache.max_size_mb = nil
+        cache_changed = true
+    end
     if cache.download_book_images == nil then
         cache.download_book_images = cache.download_images ~= false
         cache_changed = true
