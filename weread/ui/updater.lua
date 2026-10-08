@@ -82,14 +82,29 @@ function UpdaterUI:available_version()
     return self.updater:available_version()
 end
 
-function UpdaterUI:_choose_transport(callback)
+function UpdaterUI:_choose_transport(callback, on_cancel)
     local dialog
+    local resolved = false
     local function choose(use_proxy)
+        if resolved then return end
+        resolved = true
         UIManager:close(dialog)
         UIManager:scheduleIn(0.1, function() callback(use_proxy) end)
     end
+    local function cancel()
+        if resolved then return end
+        resolved = true
+        UIManager:close(dialog)
+        if on_cancel then on_cancel() end
+    end
     dialog = ButtonDialog:new{
         title = _("Choose how to connect to GitHub. Proxy mode may try gh-proxy.com, ghfast.top, and ghproxy.net. These services can see requests and alter files; their checksums do not prove publisher identity."),
+        close_callback = function()
+            if not resolved then
+                resolved = true
+                if on_cancel then on_cancel() end
+            end
+        end,
         buttons = {
             {
                 { text = _("Connect directly to GitHub"), callback = function() choose(false) end },
@@ -97,7 +112,7 @@ function UpdaterUI:_choose_transport(callback)
             },
             {
                 { text = _("Cancel"), callback = function()
-                    UIManager:close(dialog)
+                    cancel()
                 end },
             },
         },
@@ -222,9 +237,11 @@ function UpdaterUI:_show_release(release, use_proxy)
                                 self:install(release, use_proxy)
                             end)
                         else
+                            update_in_progress = true
                             self:_choose_transport(function(selected_proxy)
-                                update_in_progress = true
                                 self:install(release, selected_proxy)
+                            end, function()
+                                update_in_progress = false
                             end)
                         end
                     end,
