@@ -106,13 +106,13 @@ python3 scripts/test_updater_simulator.py \
 
 ## Release UI acceptance / 发版前界面验收
 
-Before every release, follow [macOS simulator release testing](macos-release-testing.md).
-It defines isolated candidate-package setup, synthetic inputs, core and
-change-dependent cases, ComputerUse steps, pass criteria, evidence, and the
-remaining Kindle checks. This is a release acceptance procedure; the existing
-PluginLoader runner does not execute that UI matrix automatically.
+For manual UI and device checks, use the [macOS/KOReader acceptance checklist](macos-release-testing.md).
+It defines isolated candidate-package setup, synthetic inputs, suggested cases,
+ComputerUse steps, evidence, and Kindle checks. The Release workflow does not
+execute UI or hardware checks.
 
-每次发版先按 [macOS 模拟器发版前测试](macos-release-testing.md) 执行并记录结果。
+需要手动检查 UI 或设备行为时，参考 [macOS/KOReader 手动验收清单](macos-release-testing.md)
+并记录结果；发布工作流本身会自动运行 CI 和固定版 PluginLoader 集成检查。
 脚本替身测试、真实离屏渲染、ComputerUse 窗口操作与真实服务验证应分别报告；
 不能将未执行或缺少夹具的场景标成通过。自动测试使用合成内容，不访问真实账号。
 

@@ -1,84 +1,42 @@
 # Releasing / 发布
 
-The release package contains only files needed by KOReader:
+GitHub Release 由版本 tag 驱动。推送 `vX.Y.Z` 后，GitHub Actions 会检查 tag
+和 `_meta.lua` 版本一致、tag 指向 `main` 上的提交，然后并行运行 CI 与固定版
+KOReader PluginLoader 集成检查。两者通过后，Actions 打包插件、生成 SHA-256，
+并创建 GitHub Release。Release 附件是 ZIP 和 `.sha256` 文件。
 
-- `_meta.lua` and `main.lua`;
-- `weread/` runtime modules;
-- `fonts/`;
-- `README.md`, `LICENSE`, and `NOTICE`.
+发布包只含 KOReader 运行需要的文件：`_meta.lua`、`main.lua`、`weread/`、
+`fonts/`、`README.md`、`LICENSE` 和 `NOTICE`。`.github/`、`docs/`、`scripts/`
+和 `spec/` 等开发文件不会打进包里。ZIP 只有一个顶层 `weread.koplugin/`
+目录，可直接解压到 KOReader 的 `plugins/` 目录。
 
-Development-only directories such as `.github/`, `docs/`, `scripts/`, and
-`spec/` are not shipped. The archive has a single top-level
-`weread.koplugin/` directory, so users can extract it directly into KOReader's
-`plugins/` directory.
+## 发布步骤
 
-## Pre-release validation / 发布前验收
+1. 将 `_meta.lua` 和 `main.lua` 更新为相同的新版本 `X.Y.Z`。
+2. 在 `CHANGELOG.md` 添加非空的 `## [X.Y.Z]` 小节，只写本次整理后的发布说明；
+   Actions 会补上 `## 新功能与改进` 标题及 GitHub 自动生成的变更记录。
+3. 运行本地检查并提交、推送到 `main`。
+4. 在该提交创建并推送匹配 tag：
 
-Before the next and every subsequent release, complete the
-[macOS simulator release checklist](macos-release-testing.md): run the existing
-checks, test the candidate package in an isolated KOReader profile, execute all
-core cases and applicable extended cases, and retain screenshots, logs, and a
-result record. Complete the applicable Kindle checks as well. Do this before
-pushing the release commit; a version bump on `main` can trigger publication.
+   ```bash
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
 
-从下一次发版开始，先执行 [macOS 模拟器发版前测试](macos-release-testing.md)，
-再推送发布提交。核心用例和适用扩展项必须有实际结果；FAIL/BLOCKED 不能当作通过。
-现有 PluginLoader CI 不代表这份 UI 清单已执行，macOS 通过也不代替适用的 Kindle
-验证。代码或候选包变化后，按清单规定复测并更新证据。
+5. 在 **Actions → Release** 查看工作流。成功后确认 Release 页面、ZIP 和校验和。
 
-## Local package / 本地打包
+tag 推送是发布触发点。失败时可在 Actions 中重跑；如果需要改代码，先提交修复，
+再使用新的版本号和 tag。不要移动或复用已经发布的版本 tag。
+
+UI 和设备验收无法由 GitHub Actions 判断。根据改动范围，可使用
+[macOS/KOReader 手动验收清单](macos-release-testing.md)和目标设备做补充检查，
+并在发布记录中注明未执行或受阻的项目。
+
+## 本地打包
 
 ```bash
 bash scripts/package_release.sh
 ```
 
-The default output is `dist/weread.koplugin-vX.Y.Z.zip`, where `X.Y.Z` comes
-from `_meta.lua`. A custom output path may be passed as the first argument.
-
-## Manual GitHub Release / 手动发布
-
-Open **Actions → Release → Run workflow**, select the `main` branch, and start
-the workflow. It reads the version from `_meta.lua` and publishes
-`vX.Y.Z` as a GitHub Release:
-
-- normal CI must have passed for that commit;
-- the workflow builds `weread.koplugin-vX.Y.Z.zip` and its SHA-256 checksum;
-- both files are attached to the release and retained as workflow artifacts
-  for 14 days;
-- the matching changelog section is included in the release notes.
-
-The version tag must not already exist. Bump `_meta.lua` and `main.lua`, add the
-matching changelog section, and commit the release candidate before starting a
-manual run. Runs from other branches are rejected.
-
-## Automatic release / 自动发布
-
-To publish a release:
-
-1. Update `_meta.lua` and `main.lua` to the same new `X.Y.Z` version.
-2. Add a non-empty `## [X.Y.Z]` section to `CHANGELOG.md`. Write only the
-   curated content below that heading; the workflow adds the
-   `## 新功能与改进` heading automatically.
-3. Complete the pre-release validation above, then commit and push the change
-   to `main`.
-4. The normal `CI` and pinned KOReader integration workflows run.
-5. After the KOReader integration succeeds, the `Release` workflow confirms
-   that normal CI also passed for the same commit, then creates the package,
-   checksum, tag, and GitHub Release if `vX.Y.Z` does not already exist.
-
-The automatic path waits for both CI workflows. The manual path is useful when
-you need to publish a validated `main` commit before or without the scheduled
-integration workflow completing; it still requires normal CI to have passed.
-Pushes that keep an existing version do not publish anything. Reusing an
-existing release tag fails deliberately; bump to a new version instead.
-Automatic packages use the versioned filename
-`weread.koplugin-vX.Y.Z.zip`. The zip and its `.sha256` checksum are separate
-workflow artifacts and separate GitHub Release assets.
-
-The workflow extracts the matching version section from `CHANGELOG.md`, adds
-the `## 新功能与改进` heading, and passes it to `gh release create --notes`.
-GitHub prepends that text to the English notes generated from merged pull
-requests. The generated part still includes **What's Changed**, **New
-Contributors** when applicable, and a **Full Changelog** comparison link.
-CI and the release workflow both fail if the current version has no non-empty
-changelog section.
+默认输出为 `dist/weread.koplugin-vX.Y.Z.zip`，版本来自 `_meta.lua`。也可以将
+自定义输出路径作为第一个参数传入。

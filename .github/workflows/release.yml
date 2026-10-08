@@ -1,17 +1,9 @@
 name: Release
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - "v*"
-  workflow_run:
-    workflows:
-      - KOReader integration
-    types:
-      - completed
-    branches:
-      - main
 
 permissions:
   actions: read
@@ -22,202 +14,133 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  package-and-release:
-    name: Package plugin
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
+  release-context:
+    name: Validate release tag
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      target_sha: ${{ steps.version.outputs.target_sha }}
+      archive: ${{ steps.version.outputs.archive }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Read plugin version
+      - name: Check tag and version
         id: version
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          TARGET_REF: ${{ github.ref }}
-          TARGET_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
 
-          read_version() {
-            sed -nE 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
-              | head -n 1
-          }
-
-          current="$(read_version < _meta.lua)"
-          if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "error: _meta.lua version must use X.Y.Z format (got: ${current:-missing})" >&2
+          version="$(sed -nE 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^\"]+)".*/\1/p' _meta.lua | head -n 1)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: _meta.lua version must use X.Y.Z format (got: ${version:-missing})" >&2
             exit 1
           fi
 
-          should_publish=true
-          tag="v$current"
-          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
-            if git rev-parse --verify --quiet "refs/tags/$tag"; then
-              should_publish=false
-            fi
-          elif [[ "$EVENT_NAME" == "push" ]]; then
-            if [[ "$TARGET_REF" != "refs/tags/$tag" ]]; then
-              echo "error: pushed tag does not match _meta.lua version $tag" >&2
-              exit 1
-            fi
-            git fetch origin main --quiet
-            if ! git merge-base --is-ancestor "$TARGET_SHA" origin/main; then
-              echo "error: release tag must point to a commit on main" >&2
-              exit 1
-            fi
-          else
-            if [[ "$TARGET_REF" != "refs/heads/main" ]]; then
-              echo "error: publish from the main branch so the release matches the validated code" >&2
-              exit 1
-            fi
-            if git rev-parse --verify --quiet "refs/tags/$tag"; then
-              echo "error: release tag $tag already exists; bump _meta.lua to a new version" >&2
-              exit 1
-            fi
-          fi
-
-          echo "current=$current"
-          echo "should_publish=$should_publish"
-          echo "version=$current" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=weread.koplugin-v$current" >> "$GITHUB_OUTPUT"
-          echo "archive=dist/weread.koplugin-v$current.zip" >> "$GITHUB_OUTPUT"
-          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
-          echo "target_sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Explain existing release
-        if: github.event_name == 'workflow_run' && steps.version.outputs.should_publish != 'true'
-        run: echo "Tag ${{ steps.version.outputs.tag }} already exists; no package was published."
-
-      - name: Verify basic CI passed
-        if: steps.version.outputs.should_publish == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ steps.version.outputs.target_sha }}
-        run: |
-          passed=false
-          for event in push workflow_dispatch; do
-            conclusion="$(
-              gh run list \
-                --repo "$GITHUB_REPOSITORY" \
-                --workflow ci.yml \
-                --commit "$TARGET_SHA" \
-                --event "$event" \
-                --limit 1 \
-                --json conclusion \
-                --jq '.[0].conclusion // ""'
-            )"
-            if [[ "$conclusion" == "success" ]]; then
-              passed=true
-              break
-            fi
-          done
-          if [[ "$passed" != "true" ]]; then
-            echo "error: CI for $TARGET_SHA did not succeed on push or workflow_dispatch" >&2
+          tag="v$version"
+          if [[ "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "error: pushed tag $GITHUB_REF_NAME does not match _meta.lua version $tag" >&2
             exit 1
           fi
+
+          git fetch origin main --quiet
+          target_sha="$(git rev-parse HEAD)"
+          if ! git merge-base --is-ancestor "$target_sha" origin/main; then
+            echo "error: release tag must point to a commit on main" >&2
+            exit 1
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "target_sha=$target_sha"
+            echo "archive=dist/weread.koplugin-$tag.zip"
+          } >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: CI
+    needs: release-context
+    uses: ./.github/workflows/ci.yml
+
+  koreader-integration:
+    name: KOReader integration
+    needs: release-context
+    uses: ./.github/workflows/koreader-integration.yml
+
+  publish:
+    name: Package and publish GitHub Release
+    needs:
+      - release-context
+      - ci
+      - koreader-integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-context.outputs.target_sha }}
 
       - name: Build plugin package
-        if: steps.version.outputs.should_publish == 'true'
-        run: bash scripts/package_release.sh "${{ steps.version.outputs.archive }}"
+        env:
+          ARCHIVE: ${{ needs.release-context.outputs.archive }}
+        run: bash scripts/package_release.sh "$ARCHIVE"
 
       - name: Generate checksum
-        if: steps.version.outputs.should_publish == 'true'
+        env:
+          ARCHIVE: ${{ needs.release-context.outputs.archive }}
         run: |
-          archive="${{ steps.version.outputs.archive }}"
           (
-            cd "$(dirname "$archive")"
-            sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256"
+            cd "$(dirname "$ARCHIVE")"
+            sha256sum "$(basename "$ARCHIVE")" > "$(basename "$ARCHIVE").sha256"
           )
-          cat "${{ steps.version.outputs.archive }}.sha256"
+          cat "$ARCHIVE.sha256"
 
       - name: Verify package contents
-        if: steps.version.outputs.should_publish == 'true'
+        env:
+          ARCHIVE: ${{ needs.release-context.outputs.archive }}
         run: |
-          unzip -l "${{ steps.version.outputs.archive }}"
-          test "$(unzip -Z1 "${{ steps.version.outputs.archive }}" | head -n 1)" \
-            = "weread.koplugin/"
-          unzip -Z1 "${{ steps.version.outputs.archive }}" \
-            | grep -qx "weread.koplugin/main.lua"
-          unzip -Z1 "${{ steps.version.outputs.archive }}" \
-            | grep -qx "weread.koplugin/_meta.lua"
-          unzip -Z1 "${{ steps.version.outputs.archive }}" \
-            | grep -qx "weread.koplugin/icons/weread-w-book.svg"
-          unzip -Z1 "${{ steps.version.outputs.archive }}" \
-            | grep -qx "weread.koplugin/integrations/init.lua"
-          unzip -Z1 "${{ steps.version.outputs.archive }}" \
-            | grep -qx "weread.koplugin/integrations/zenui.lua"
-          if unzip -Z1 "${{ steps.version.outputs.archive }}" \
-            | grep -Eq '^weread\.koplugin/(spec|scripts|docs|\.github)/'; then
+          set -euo pipefail
+          unzip -l "$ARCHIVE"
+          test "$(unzip -Z1 "$ARCHIVE" | head -n 1)" = "weread.koplugin/"
+          unzip -Z1 "$ARCHIVE" | grep -qx "weread.koplugin/main.lua"
+          unzip -Z1 "$ARCHIVE" | grep -qx "weread.koplugin/_meta.lua"
+          unzip -Z1 "$ARCHIVE" | grep -qx "weread.koplugin/icons/weread-w-book.svg"
+          unzip -Z1 "$ARCHIVE" | grep -qx "weread.koplugin/integrations/init.lua"
+          unzip -Z1 "$ARCHIVE" | grep -qx "weread.koplugin/integrations/zenui.lua"
+          if unzip -Z1 "$ARCHIVE" | grep -Eq '^weread\.koplugin/(spec|scripts|docs|\.github)/'; then
             echo "error: development-only files were included in the release package" >&2
             exit 1
           fi
 
-      - name: Upload plugin package artifact
-        if: steps.version.outputs.should_publish == 'true'
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ steps.version.outputs.artifact_name }}
-          path: ${{ steps.version.outputs.archive }}
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-
-      - name: Upload checksum artifact
-        if: steps.version.outputs.should_publish == 'true'
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ steps.version.outputs.artifact_name }}-checksum
-          path: ${{ steps.version.outputs.archive }}.sha256
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Ensure release tag is new
-        if: steps.version.outputs.should_publish == 'true'
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          TAG: ${{ steps.version.outputs.tag }}
-          TARGET_SHA: ${{ steps.version.outputs.target_sha }}
-        run: |
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            tag_sha="$(git rev-parse "$TAG^{}")"
-            if [[ "$tag_sha" != "$TARGET_SHA" ]]; then
-              echo "error: release tag does not point to the checked commit" >&2
-              exit 1
-            fi
-          elif git rev-parse --verify --quiet "refs/tags/$TAG"; then
-              echo "error: tag $TAG already exists; bump _meta.lua to a new version" >&2
-              exit 1
-          fi
-
-      - name: Build release notes preface
-        if: steps.version.outputs.should_publish == 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          bash scripts/extract_release_notes.sh \
-            "$VERSION" \
-            dist/release-preface.md
-          cat dist/release-preface.md
-
-      - name: Create GitHub Release
-        if: steps.version.outputs.should_publish == 'true'
+      - name: Build release notes
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
-          ARCHIVE: ${{ steps.version.outputs.archive }}
-          TARGET_SHA: ${{ steps.version.outputs.target_sha }}
+          TAG: ${{ needs.release-context.outputs.tag }}
+          TARGET_SHA: ${{ needs.release-context.outputs.target_sha }}
+          VERSION: ${{ needs.release-context.outputs.version }}
         run: |
-          release_preface="$(cat dist/release-preface.md)"
+          set -euo pipefail
+          mkdir -p dist
+          bash scripts/extract_release_notes.sh "$VERSION" dist/release-preface.md
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            -f target_commitish="$TARGET_SHA" \
+            --jq '.body' > dist/generated-release-notes.md
+          cat dist/release-preface.md dist/generated-release-notes.md > dist/release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-context.outputs.tag }}
+          VERSION: ${{ needs.release-context.outputs.version }}
+          TARGET_SHA: ${{ needs.release-context.outputs.target_sha }}
+          ARCHIVE: ${{ needs.release-context.outputs.archive }}
+        run: |
           gh release create "$TAG" \
             "$ARCHIVE" \
             "$ARCHIVE.sha256" \
             --target "$TARGET_SHA" \
             --title "Version $VERSION" \
-            --notes "$release_preface" \
-            --generate-notes
+            --notes-file dist/release-notes.md

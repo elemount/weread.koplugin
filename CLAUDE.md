@@ -152,14 +152,11 @@ rg -n "wrk-|wr_skey[=]|wr_rt[=]|wr_vid[=]|ptcz[=]|x-wrpa|thirdwx" -S .
 When the user asks to publish a new version:
 
 1. Pull the latest remote `main` with a fast-forward-only update and verify the worktree is clean.
-2. Compare the latest release tag with `main`, then draft a concise, user-facing Chinese Changelog. Avoid implementation jargon and thank the relevant contributors.
-3. Show the draft to the user and wait for explicit approval. Do not change version files, commit, push, tag, or publish before approval.
-4. After approval, add the matching version section to `CHANGELOG.md` and update both `_meta.lua` and `main.lua` to the same version.
-5. Run the repository's release checks: Lua specs, namespace checks, Luacheck, Python compilation, release-note extraction, package verification, and sensitive-information scanning.
-   Before pushing the release commit, also complete `docs/macos-release-testing.md`: all core cases, applicable extended cases and Kindle checks, with a candidate-package result record. Do not treat the PluginLoader CI or mocked specs as UI acceptance, and report missing fixtures or unexecuted required cases as BLOCKED. Revalidate affected cases after code changes.
-6. Commit the release changes and push `main`. Do not create the release tag manually; let GitHub Actions create the tag and GitHub Release.
-7. Wait for normal CI, the pinned KOReader integration test, and the Release workflow. Verify the tag, release URL, package, and checksum before reporting success.
-8. Generate a vertical release poster in the established warm ivory, forest-green, minimalist editorial style. Give the main feature the strongest visual emphasis and summarize other improvements in smaller cards. Keep contributor acknowledgements in the Changelog unless the user asks to place them on the poster.
+2. Compare the latest release tag with `main`, then prepare a concise, user-facing Chinese Changelog. Avoid implementation jargon and thank relevant contributors when appropriate.
+3. Update `CHANGELOG.md`, `_meta.lua`, and `main.lua` to the same new version.
+4. Run the repository's release checks: Lua specs, namespace checks, Luacheck, Python compilation, release-note extraction, package verification, and sensitive-information scanning. Use `docs/macos-release-testing.md` for optional manual UI/device checks relevant to the changes; record any checks that could not be run.
+5. Commit and push the release commit to `main`, create the matching annotated `vX.Y.Z` tag, and push the tag. The tag push starts Release, which runs CI and pinned KOReader integration before packaging and publishing.
+6. Verify the Release workflow, release URL, package, and checksum before reporting success.
 
 ## Unimplemented Features (WIP)
 
@@ -169,7 +166,7 @@ These are placeholder menu items shown when a WeRead book is open, currently gre
 
 ## Reference Docs
 
-- `docs/macos-release-testing.md` — required pre-release macOS UI cases, execution flow, evidence, and Kindle coverage
+- `docs/macos-release-testing.md` — optional manual UI checks, execution flow, evidence, and Kindle coverage
 - `docs/weread-api-reference.md` — native API endpoint reference and QR login boundary
 - `docs/weread-content-research.md` — content decoding and image packaging research
 - `docs/weread-annotations-flow.md` — underline/thought download → embed → tap-to-display flow
