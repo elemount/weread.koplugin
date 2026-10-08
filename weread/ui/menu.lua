@@ -783,55 +783,10 @@ function M:getUpdateMenuItems()
             text = _("Check for updates"),
             keep_menu_open = true,
             callback = self:safeCallback(_("Check for updates"), function()
-                self.updater:check(true)
+                self.updater:choose_and_check()
             end),
         })
     end
-    table.insert(items, {
-        text = _("Automatically check once an hour"),
-        keep_menu_open = true,
-        check_callback_updates_menu = true,
-        checked_func = function()
-            return self.settings:get("update").auto_check == true
-        end,
-        callback = self:safeCallback(_("Automatically check once an hour"),
-            function(touchmenu_instance)
-                local update = self.settings:get("update")
-                update.auto_check = not (update.auto_check == true)
-                self.settings:set("update", update)
-                self.settings:flush()
-                if update.auto_check then self.updater:schedule_auto_check() end
-                if touchmenu_instance then touchmenu_instance:updateItems() end
-            end),
-    })
-    table.insert(items, {
-        text = _("Prefer proxy for updates"),
-        keep_menu_open = true,
-        check_callback_updates_menu = true,
-        checked_func = function()
-            return self.settings:get("update").prefer_proxy == true
-        end,
-        callback = self:safeCallback(_("Prefer proxy for updates"),
-            function(touchmenu_instance)
-                local update = self.settings:get("update")
-                local function apply(enabled)
-                    update.prefer_proxy = enabled
-                    self.settings:set("update", update)
-                    self.settings:flush()
-                    if touchmenu_instance then touchmenu_instance:updateItems() end
-                end
-                if update.prefer_proxy == true then
-                    apply(false)
-                    return
-                end
-                UIManager:show(ConfirmBox:new{
-                    text = _("Update proxies are third-party services. They can see update requests and may be unavailable without notice. Release packages will still be verified before installation. Prefer proxies?"),
-                    ok_text = _("Enable"),
-                    cancel_text = _("Cancel"),
-                    ok_callback = function() apply(true) end,
-                })
-            end),
-    })
     return items
 end
 

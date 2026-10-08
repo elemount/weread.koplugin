@@ -15,6 +15,7 @@ local values = {
     account = { name = "legacy-user" },
     books = { ["42"] = { cache_dir = "/cache/42" } },
     cache = { download_images = false, book_footnotes_in_popup = true },
+    update = { auto_check = true, prefer_proxy = true, available_version = "1.2.3" },
     config_loaded = true,
 }
 local flush_count = 0
@@ -90,8 +91,10 @@ local settings = Settings:new()
 
 expect(settings.data_dir == "/data/weread", "data directory was wrong")
 expect(settings.cache_dir == "/data/weread/cache", "default cache directory was wrong")
-expect(settings:get("update").prefer_proxy == true,
-    "update proxy should be preferred by default")
+expect(settings:get("update").auto_check == nil
+    and settings:get("update").prefer_proxy == nil
+    and settings:get("update").available_version == "1.2.3",
+    "legacy automatic update preferences should be removed without losing cached updates")
 expect(settings:get("shelf").paginated == true,
     "bookshelf pagination should be enabled by default")
 local thought_popup = settings:get("thought_popup")

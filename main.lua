@@ -25,7 +25,7 @@ local _ = PluginUtil.tr
 local WeReadPlugin = WidgetContainer:extend{
     name = "weread",
     is_doc_only = false,
-    version = "1.7.2",
+    version = "1.7.3",
 }
 
 -- Stable entry point used by third-party launchers such as SimpleUI and ZenUI.
@@ -179,7 +179,6 @@ function WeReadPlugin:init()
     self.integrations = Integrations
     self.integrations.register(self)
     self._reader_session_gen = 0
-    self.updater:schedule_auto_check()
     logger.info("initialized:", "version=", self.version)
     updater:cleanup_backup()
 end

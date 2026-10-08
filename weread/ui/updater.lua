@@ -1,6 +1,7 @@
 -- Presentation and background-task orchestration for the plugin updater.
 -- Network, verification, extraction, and rollback logic live in lib/updater.
 local ConfirmBox = require("ui/widget/confirmbox")
+local ButtonDialog = require("ui/widget/buttondialog")
 local DownloadDialog = require("weread.ui.download_dialog")
 local InfoMessage = require("ui/widget/infomessage")
 local logger = require("weread.lib.logger")
@@ -81,6 +82,43 @@ function UpdaterUI:available_version()
     return self.updater:available_version()
 end
 
+function UpdaterUI:_choose_transport(callback)
+    local dialog
+    local function choose(use_proxy)
+        UIManager:close(dialog)
+        UIManager:scheduleIn(0.1, function() callback(use_proxy) end)
+    end
+    dialog = ButtonDialog:new{
+        title = _("Choose how to connect to GitHub. Proxy mode may try gh-proxy.com, ghfast.top, and ghproxy.net. These services can see requests and alter files; their checksums do not prove publisher identity."),
+        buttons = {
+            {
+                { text = _("Connect directly to GitHub"), callback = function() choose(false) end },
+                { text = _("Use a third-party proxy"), callback = function() choose(true) end },
+            },
+            {
+                { text = _("Cancel"), callback = function()
+                    UIManager:close(dialog)
+                end },
+            },
+        },
+    }
+    UIManager:show(dialog)
+    return dialog
+end
+
+function UpdaterUI:choose_and_check()
+    if self._checking or active_viewer or update_in_progress then return false end
+    if not self.is_connected() then
+        UIManager:show(InfoMessage:new{
+            text = _("No network connection. Please connect Wi-Fi and try again."),
+        })
+        return false
+    end
+    return self:_choose_transport(function(use_proxy)
+        self:check(use_proxy)
+    end)
+end
+
 function UpdaterUI:_run_subprocess(message, task, callback, trap_widget)
     local ok_trapper, Trapper = pcall(require, "ui/trapper")
     if ok_trapper and Trapper and Trapper.wrap and not coroutine.running() then
@@ -119,7 +157,7 @@ function UpdaterUI:_run_subprocess(message, task, callback, trap_widget)
     end
 end
 
-function UpdaterUI:_show_release(release)
+function UpdaterUI:_show_release(release, use_proxy)
     if active_viewer or update_in_progress then return end
     if self.updater.compare_versions(
         release.version, self.updater.current_version) ~= 1 then
@@ -133,16 +171,9 @@ function UpdaterUI:_show_release(release)
     local notes = release.notes or _("No release notes were provided.")
     local viewer
     local resolved = false
-    local function choose(action)
+    local function dismiss()
         if resolved then return false end
         resolved = true
-        if action == "skip" then
-            self.updater:skip_update(release.version)
-        elseif action ~= "install" then
-            self.updater:snooze_update(release.version)
-        else
-            update_in_progress = true
-        end
         active_viewer = nil
         return true
     end
@@ -155,50 +186,25 @@ function UpdaterUI:_show_release(release)
         auto_para_direction = true,
         show_menu = false,
         add_default_buttons = false,
-        close_callback = function() choose("later") end,
+        close_callback = dismiss,
         init = function(widget, reinit)
             local Screen = require("device").screen
-            local Font = require("ui/font")
-            local TextWidget = require("ui/widget/textwidget")
-            local VerticalGroup = require("ui/widget/verticalgroup")
             widget.width = math.floor(Screen:getWidth() * 0.85)
             widget.height = math.floor(Screen:getHeight() * 0.75)
             for _, entry in ipairs(widget.buttons_table[1]) do
                 entry.height = Screen:scaleBySize(60)
             end
             TextViewer.init(widget, reinit)
-            -- Keep native button input/feedback, with a smaller explanatory line.
-            for _, item in ipairs({
-                { "later", _("No reminders for 24 hours") },
-                { "skip", _("Remind me when a newer version is available") },
-            }) do
-                local button = widget.button_table:getButtonById(item[1])
-                button.label_container[1] = VerticalGroup:new{
-                    button.label_widget,
-                    TextWidget:new{
-                        text = item[2],
-                        face = Font:getFace("cfont", 14),
-                        max_width = button.label_container.dimen.w,
-                    },
-                }
-            end
             local install = widget.button_table:getButtonById("install")
             install.label_widget.fgcolor = require("ffi/blitbuffer").COLOR_WHITE
         end,
         buttons_table = {
             {
                 {
-                    id = "later",
-                    text = _("Remind me later"),
+                    id = "close",
+                    text = _("Close"),
                     callback = function()
-                        if choose("later") then UIManager:close(viewer) end
-                    end,
-                },
-                {
-                    id = "skip",
-                    text = _("Skip this version"),
-                    callback = function()
-                        if choose("skip") then UIManager:close(viewer) end
+                        if dismiss() then UIManager:close(viewer) end
                     end,
                 },
             },
@@ -208,11 +214,19 @@ function UpdaterUI:_show_release(release)
                     text = _("Update now"),
                     background = require("ffi/blitbuffer").COLOR_BLACK,
                     callback = function()
-                        if not choose("install") then return end
+                        if not dismiss() then return end
                         UIManager:close(viewer)
-                        UIManager:scheduleIn(0.1, function()
-                            self:install(release)
-                        end)
+                        if use_proxy ~= nil then
+                            update_in_progress = true
+                            UIManager:scheduleIn(0.1, function()
+                                self:install(release, use_proxy)
+                            end)
+                        else
+                            self:_choose_transport(function(selected_proxy)
+                                update_in_progress = true
+                                self:install(release, selected_proxy)
+                            end)
+                        end
                     end,
                 },
             },
@@ -223,23 +237,23 @@ function UpdaterUI:_show_release(release)
     return viewer
 end
 
-function UpdaterUI:check(manual)
+function UpdaterUI:check(use_proxy)
     if self._checking or active_viewer or update_in_progress then return false end
-    if manual and not self.is_connected() then
+    if not self.is_connected() then
         UIManager:show(InfoMessage:new{
             text = _("No network connection. Please connect Wi-Fi and try again."),
         })
         return false
     end
     self._checking = true
-    self:_run_subprocess(manual and _("Checking for updates…") or nil, function()
-        local release, err = self.updater:fetch_release()
+    self:_run_subprocess(_("Checking for updates…"), function()
+        local release, err = self.updater:fetch_release(use_proxy)
         return { release = release, error = err }
     end, function(result)
         self._checking = false
         if not result or not result.release then
             logger.warn("update check failed:", result and result.error or "cancelled")
-            if manual and not (result and result.cancelled) then
+            if not (result and result.cancelled) then
                 UIManager:show(InfoMessage:new{
                     text = T(_("Update check failed:\n%1"),
                         result and result.error or _("Unknown error")),
@@ -249,16 +263,14 @@ function UpdaterUI:check(manual)
         end
         self.updater:cache_release(result.release)
         self.refresh_ui()
-        if manual or self.updater:should_notify(result.release.version) then
-            self:_show_release(result.release)
-        end
+        self:_show_release(result.release, use_proxy)
     end)
     return true
 end
 
 function UpdaterUI:show_cached_update()
     local release = self.updater:cached_release()
-    if not release then return self:check(true) end
+    if not release then return self:choose_and_check() end
     return self:_show_release(release)
 end
 
@@ -282,10 +294,10 @@ function UpdaterUI:_progress_title(event)
     return _("Preparing update…")
 end
 
-function UpdaterUI:install(release)
+function UpdaterUI:install(release, use_proxy)
     local ok_trapper, Trapper = pcall(require, "ui/trapper")
     if ok_trapper and Trapper and Trapper.wrap and not coroutine.running() then
-        Trapper:wrap(function() self:install(release) end)
+        Trapper:wrap(function() self:install(release, use_proxy) end)
         return
     end
 
@@ -320,7 +332,7 @@ function UpdaterUI:install(release)
     poll()
 
     self:_run_subprocess(nil, function()
-        local ok, err = self.updater:install_release(release, function(event)
+        local ok, err = self.updater:install_release(release, use_proxy, function(event)
             write_progress(progress_path, event)
         end)
         return { success = ok == true, error = err }
@@ -353,16 +365,6 @@ function UpdaterUI:install(release)
             ok_callback = function() UIManager:restartKOReader() end,
         })
     end, dialog)
-end
-
-function UpdaterUI:schedule_auto_check()
-    local state = self.settings:get("update")
-    if state.auto_check ~= true then return end
-    local last = tonumber(state.last_check) or 0
-    if os.time() - last < self.updater.AUTO_CHECK_INTERVAL then return end
-    UIManager:scheduleIn(5, function()
-        if self.is_connected() then self:check(false) end
-    end)
 end
 
 return UpdaterUI

@@ -49,14 +49,14 @@ expect(Updater.compare_versions("invalid", "1.2.3") == nil,
 expect(Updater.compare_versions("1.2.3-beta", "1.2.3") == nil,
     "non-release version should be rejected")
 
-local direct_first = Updater.candidate_urls(Updater.API_URL, false)
-expect(#direct_first == 4 and direct_first[1] == Updater.API_URL
-    and direct_first[2]:find("gh%-proxy.com"),
-    "direct-first source order was wrong")
-local proxy_first = Updater.candidate_urls(Updater.API_URL, true)
-expect(#proxy_first == 4 and proxy_first[1]:find("gh%-proxy.com")
-    and proxy_first[4] == Updater.API_URL,
-    "proxy-first source order was wrong")
+local direct_only = Updater.candidate_urls(Updater.API_URL, false)
+expect(#direct_only == 1 and direct_only[1] == Updater.API_URL,
+    "direct mode must use GitHub only")
+local proxy_only = Updater.candidate_urls(Updater.API_URL, true)
+expect(#proxy_only == #Updater.GITHUB_MIRRORS
+    and proxy_only[1]:find("gh%-proxy.com")
+    and proxy_only[#proxy_only] ~= Updater.API_URL,
+    "proxy mode must use proxy sources only")
 expect(#Updater.candidate_urls("https://example.com/update.zip", true) == 0,
     "untrusted update URL should not receive proxy candidates")
 
@@ -157,7 +157,7 @@ package.loaded["socket/http"] = {
     end,
 }
 
-local update_state = { prefer_proxy = false }
+local update_state = {}
 local updater = Updater:new{
     settings = {
         get = function() return update_state end,
@@ -168,25 +168,11 @@ local updater = Updater:new{
     plugin_dir = "/tmp/weread.koplugin",
 }
 updater:cache_release(release)
-expect(updater:should_notify("0.7.0"), "new release should notify by default")
-expect(not updater:should_notify("0.6.0") and not updater:should_notify("0.5.0"),
-    "current or older release should not notify")
-local before_snooze = os.time()
-updater:snooze_update("0.7.0")
-expect(update_state.snooze_until >= before_snooze + 86400
-    and not updater:should_notify("0.7.0"), "snooze must suppress the version for 24 hours")
-expect(updater:should_notify("0.8.0"), "snooze must not hide a newer version")
 local reloaded = Updater:new{
     settings = updater.settings, current_version = "0.6.0", plugin_dir = updater.plugin_dir,
 }
-expect(not reloaded:should_notify("0.7.0"), "snooze must survive instance recreation")
-update_state.snooze_until = os.time()
-expect(reloaded:should_notify("0.7.0"), "snooze should expire after 24 hours")
-updater:skip_update("0.7.0")
-updater:cache_release(release)
-expect(not reloaded:should_notify("0.7.0") and reloaded:should_notify("0.8.0"),
-    "skipped version must survive checks and leave newer releases visible")
-expect(reloaded:cached_release().version == "0.7.0", "skipping must preserve manual update")
+expect(reloaded:cached_release().version == "0.7.0",
+    "cached release should survive instance recreation")
 local backup_exists, purged_path = true, nil
 package.loaded["libs/libkoreader-lfs"] = {
     attributes = function(path)

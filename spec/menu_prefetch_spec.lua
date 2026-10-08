@@ -231,8 +231,8 @@ local last_settings_item = settings_items[#settings_items]
 expect(last_settings_item and last_settings_item.text == "About",
     "about is the last settings menu item")
 local about_items = last_settings_item and last_settings_item.sub_item_table_func()
-expect(about_items and #about_items == 5,
-    "about contains version, author, and three update settings")
+expect(about_items and #about_items == 3,
+    "about contains version, author, and one manual update action")
 for index, item in ipairs(about_items or {}) do
     expect(item.keep_menu_open == true,
         "about item " .. index .. " keeps the menu open")
@@ -242,14 +242,13 @@ expect(about_items[1] and about_items[1].text == "Version %1",
 expect(about_items[2] and about_items[2].text == "Author: %1",
     "author is the second about item")
 expect(about_items[3] and about_items[3].text == "Check for updates"
-        and about_items[4].text == "Automatically check once an hour"
-        and about_items[5].text == "Prefer proxy for updates",
-    "update settings follow version and author at the same level")
+        and about_items[3].keep_menu_open == true,
+    "manual update action follows version and author at the same level")
 available_version = "0.7.0"
 local update_available_items = last_settings_item.sub_item_table_func()
-expect(#update_available_items == 5
+expect(#update_available_items == 3
         and update_available_items[3].text == "Update to v%1",
-    "available update replaces the check item without adding a sixth item")
+    "available update replaces the manual check item")
 available_version = nil
 about_items[1].callback()
 expect(shown_widget and shown_widget.text:find("Disclaimer", 1, true),

@@ -67,12 +67,6 @@ local defaults = {
         developer_logs = false,
     },
     update = {
-        auto_check = false,
-        prefer_proxy = true,
-        last_check = 0,
-        skipped_version = "",
-        snoozed_version = "",
-        snooze_until = 0,
         available_version = "",
         archive_url = "",
         checksum_url = "",
@@ -211,6 +205,21 @@ function Settings:new()
         obj.store:flush()
     end
     local legacy_changed = false
+    local update = obj.store:readSetting("update", deepcopy(defaults.update))
+    local update_changed = false
+    for _, key in ipairs({
+        "auto_check", "prefer_proxy", "last_check", "skipped_version",
+        "snoozed_version", "snooze_until",
+    }) do
+        if update[key] ~= nil then
+            update[key] = nil
+            update_changed = true
+        end
+    end
+    if update_changed then
+        obj.store:saveSetting("update", update)
+        legacy_changed = true
+    end
     for _, key in ipairs({
         "api_key",
         "wr_ticket",

@@ -9,8 +9,6 @@ local logger = require("weread.lib.logger")
 local Updater = {}
 Updater.__index = Updater
 
-Updater.AUTO_CHECK_INTERVAL = 60 * 60
-Updater.REMINDER_INTERVAL = 24 * 60 * 60
 Updater.MAX_NOTES_BYTES = 64 * 1024
 Updater.MAX_PACKAGE_BYTES = 10 * 1024 * 1024
 Updater.API_URL = "https://api.github.com/repos/elemount/weread.koplugin/releases/latest"
@@ -143,21 +141,17 @@ function Updater.compare_versions(left, right)
     return 0
 end
 
-function Updater.candidate_urls(url, prefer_proxy)
+function Updater.candidate_urls(url, use_proxy)
     local is_allowed = url == Updater.API_URL
         or (type(url) == "string"
             and url:sub(1, #Updater.RELEASE_PREFIX) == Updater.RELEASE_PREFIX)
     if not is_allowed then return {} end
-    local direct, proxies = { url }, {}
+    if not use_proxy then return { url } end
+    local proxies = {}
     for _, prefix in ipairs(Updater.GITHUB_MIRRORS) do
         proxies[#proxies + 1] = prefix .. url
     end
-    local out = {}
-    local first, second = prefer_proxy and proxies or direct,
-        prefer_proxy and direct or proxies
-    for _, candidate in ipairs(first) do out[#out + 1] = candidate end
-    for _, candidate in ipairs(second) do out[#out + 1] = candidate end
-    return out
+    return proxies
 end
 
 function Updater.parse_release(data)
@@ -230,26 +224,7 @@ function Updater:available_version()
     return self:has_update() and self:_state().available_version or nil
 end
 
-function Updater:should_notify(version)
-    if Updater.compare_versions(version, self.current_version) ~= 1 then return false end
-    local state = self:_state()
-    if state.skipped_version == version then return false end
-    return state.snoozed_version ~= version
-        or os.time() >= (tonumber(state.snooze_until) or 0)
-end
-
-function Updater:snooze_update(version)
-    self:_save_state{
-        snoozed_version = version,
-        snooze_until = os.time() + Updater.REMINDER_INTERVAL,
-    }
-end
-
-function Updater:skip_update(version)
-    self:_save_state{ skipped_version = version }
-end
-
-function Updater:_http_get(url, destination, on_download, total_hint, max_bytes)
+function Updater:_http_get(url, destination, on_download, total_hint, max_bytes, allow_redirect)
     local http = require("socket/http")
     local ltn12 = require("ltn12")
     local socket = require("socket")
@@ -286,7 +261,7 @@ function Updater:_http_get(url, destination, on_download, total_hint, max_bytes)
             ["Accept"] = "application/vnd.github+json",
         },
         sink = sink,
-        redirect = true,
+        redirect = allow_redirect ~= false,
     })
     socketutil:reset_timeout()
     if limit_error then
@@ -300,29 +275,30 @@ function Updater:_http_get(url, destination, on_download, total_hint, max_bytes)
     return destination and true or table.concat(chunks)
 end
 
-function Updater:_http_get_with_mirrors(url, destination, on_download, total_hint, max_bytes)
-    local candidates = Updater.candidate_urls(url, self:_state().prefer_proxy == true)
+function Updater:_http_get_with_mirrors(url, destination, on_download, total_hint, max_bytes, use_proxy)
+    local candidates = Updater.candidate_urls(url, use_proxy == true)
     if #candidates == 0 then return nil, "update URL is not allowed" end
     local last_error
     for index, candidate in ipairs(candidates) do
         if on_download then on_download(0, total_hint) end
         local ok, err = self:_http_get(
-            candidate, destination, on_download, total_hint, max_bytes)
+            candidate, destination, on_download, total_hint, max_bytes,
+            use_proxy ~= true)
         if ok then
             logger.info("update resource fetched:", "source=", tostring(index),
-                "proxy=", tostring(candidate ~= url))
+                "proxy=", tostring(use_proxy == true))
             return ok
         end
         if err == "download exceeds size limit" then return nil, err end
         last_error = err
         logger.warn("update resource source failed:", "source=", tostring(index),
-            "proxy=", tostring(candidate ~= url), "error=", tostring(err))
+            "proxy=", tostring(use_proxy == true), "error=", tostring(err))
     end
     return nil, last_error or "all update sources failed"
 end
 
-function Updater:fetch_release()
-    local body, err = self:_http_get_with_mirrors(Updater.API_URL)
+function Updater:fetch_release(use_proxy)
+    local body, err = self:_http_get_with_mirrors(Updater.API_URL, nil, nil, nil, nil, use_proxy)
     if not body then return nil, err end
     local ok_json, json = pcall(require, "json")
     if not ok_json then return nil, "JSON support unavailable" end
@@ -333,7 +309,6 @@ end
 
 function Updater:cache_release(release)
     self:_save_state{
-        last_check = os.time(),
         available_version = release.version,
         archive_url = release.archive_url,
         checksum_url = release.checksum_url,
@@ -382,7 +357,7 @@ function Updater:cleanup_backup()
     return nil, err
 end
 
-function Updater:install_release(release, on_progress)
+function Updater:install_release(release, use_proxy, on_progress)
     local function report(stage, percent, current, total)
         if on_progress then
             on_progress{
@@ -409,10 +384,11 @@ function Updater:install_release(release, on_progress)
         release.archive_url, archive, function(received, total)
             local ratio = total and total > 0 and math.min(1, received / total) or 0
             report("downloading", math.floor(5 + ratio * 70), received, total or 0)
-        end, archive_size, Updater.MAX_PACKAGE_BYTES)
+        end, archive_size, Updater.MAX_PACKAGE_BYTES, use_proxy)
     if not ok then remove_tree(stage); return nil, err end
     report("checksum", 76)
-    local checksum_ok, checksum_err = self:_http_get_with_mirrors(release.checksum_url, checksum)
+    local checksum_ok, checksum_err = self:_http_get_with_mirrors(
+        release.checksum_url, checksum, nil, nil, nil, use_proxy)
     if not checksum_ok then
         remove_file(archive); remove_tree(stage)
         return nil, checksum_err
