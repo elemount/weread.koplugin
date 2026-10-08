@@ -13,6 +13,7 @@ h5 { font-size: 1.1em; }
 h6 { font-size: 1em; }
 b, strong { font-weight: bold; }
 p { margin: 0; }
+p.txt-blank-gap { height: 1em; line-height: 1; }
 i, em { font-style: italic; }
 center { text-align: center; }
 code, pre, blockquote { font-family: monospace; text-align: left; }
@@ -72,11 +73,30 @@ img.h-pic {
 }
 ]]
 
+-- Native book CSS can carry web-reader viewport defaults that fight KOReader's
+-- font, theme, and page-size settings. Keep those choices inherited at the
+-- document root while leaving paragraph and image layout rules intact.
+ReaderStyles.reader_preferences_css = [[
+html, body {
+    font-size: 1em !important;
+    font-family: inherit !important;
+    color: inherit !important;
+    background-color: transparent !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    max-width: none !important;
+    max-height: none !important;
+}
+]]
+
 function ReaderStyles.compose(book_css)
     local parts = { ReaderStyles.base_css }
     if type(book_css) == "string" and book_css ~= "" then
         parts[#parts + 1] = book_css
     end
+    parts[#parts + 1] = ReaderStyles.reader_preferences_css
     parts[#parts + 1] = ReaderStyles.image_css
     return table.concat(parts, "\n")
 end
