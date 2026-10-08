@@ -128,9 +128,12 @@ local book = {
     intro = "简介 & <精彩> \"引号\"\n第二行\0\1",
     cache_dir = root,
 }
+local book_css = [[blockquote { font-family: "Book Serif"; font-size: 18px; }
+.quote-text { font-family: "Book Quote"; font-size: 14pt; }]]
+local quote_xhtml = [[<blockquote class="quote-text" style="font-family: 'Inline Quote'; font-size: 19px; color: #333; background-color: white">quoted text</blockquote>]]
 local output = Content.save_book_epub(settings, book,
     { { chapterUid = 7, title = "Chapter" } },
-    { ["7"] = "<p>body</p>" }, "book", assets, "body{}")
+    { ["7"] = quote_xhtml }, "book", assets, book_css)
 local used_path = false
 local path_calls = 0
 for _, call in ipairs(archive_calls) do
@@ -159,6 +162,30 @@ expect(opf:find(
     "book introduction was not safely embedded as dc:description")
 expect(opf:find("\0", 1, true) == nil and opf:find("\1", 1, true) == nil,
     "XML-illegal control characters remained in the OPF metadata")
+local saved_css, saved_chapter
+for _, call in ipairs(archive_calls) do
+    if call.kind == "memory" and call.name == "OEBPS/style.css" then
+        saved_css = call.data
+    elseif call.kind == "memory" and call.name == "OEBPS/text/chapter-001.xhtml" then
+        saved_chapter = call.data
+    end
+end
+local image_defaults = saved_css and saved_css:find("img {", 1, true)
+local book_styles = saved_css and saved_css:find(book_css, 1, true)
+local reader_geometry = saved_css and saved_css:find("html, body {\n    width: auto !important;", 1, true)
+expect(saved_css and book_styles and image_defaults and image_defaults < book_styles,
+    "book CSS must remain intact and follow plugin image defaults")
+expect(saved_css and book_styles and reader_geometry and book_styles < reader_geometry,
+    "only root viewport constraints may follow the book stylesheet")
+expect(saved_css and not saved_css:find("font-size: 1em !important", 1, true)
+        and not saved_css:find("font-family: inherit !important", 1, true)
+        and not saved_css:find("color: inherit !important", 1, true),
+    "plugin CSS must not force author typography or colors to KOReader defaults")
+expect(saved_chapter and saved_chapter:find("font-family: 'Inline Quote'", 1, true)
+        and saved_chapter:find("font-size: 19px", 1, true)
+        and saved_chapter:find("color: #333", 1, true)
+        and saved_chapter:find("background-color: white", 1, true),
+    "XHTML normalization changed inline book typography or colors")
 
 local old = assert(io.open(output, "wb"))
 old:write("known-good-old-epub")

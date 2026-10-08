@@ -795,40 +795,12 @@ local void_xhtml_tags = {
     param = true, source = true, track = true, wbr = true,
 }
 
-local fixed_font_units = {
-    px = true, pt = true, pc = true, inch = true, ["in"] = true,
-    cm = true, mm = true, q = true,
-}
-
-local function is_fixed_font_size(value)
-    value = tostring(value or ""):lower():gsub("%s*!important%s*$", "")
-        :gsub("^%s+", ""):gsub("%s+$", "")
-    local number, unit = value:match("^(%d+%.?%d*)%s*([%a]+)$")
-    return number ~= nil and tonumber(number) > 0 and fixed_font_units[unit] == true
-end
-
-local theme_neutral_colors = {
-    black = true, white = true, gray = true, grey = true, silver = true,
-    dimgray = true, dimgrey = true, darkgray = true, darkgrey = true,
-    lightgray = true, lightgrey = true, gainsboro = true, whitesmoke = true,
-}
-
-local function is_theme_neutral_color(value)
-    value = tostring(value or ""):lower():gsub("%s*!important%s*$", "")
-        :gsub("^%s+", ""):gsub("%s+$", "")
-    if theme_neutral_colors[value] then return true end
-    local hex = value:match("^#([%da-f]+)$")
-    if hex and (#hex == 3 or #hex == 6) then
-        local channels
-        if #hex == 3 then
-            channels = { hex:sub(1, 1), hex:sub(2, 2), hex:sub(3, 3) }
-        else
-            channels = { hex:sub(1, 2), hex:sub(3, 4), hex:sub(5, 6) }
-        end
-        return channels[1] == channels[2] and channels[2] == channels[3]
+local function is_zero_font_size(value)
+    value = tostring(value or ""):lower():match("^%s*(.-)%s*$")
+    if value:sub(-10) == "!important" then
+        value = (value:match("^(.-)%s*!important$") or ""):match("^%s*(.-)%s*$")
     end
-    local red, green, blue = value:match("^rgb%(%s*(%d+)%s*,%s*(%d+)%s*,%s*(%d+)%s*%)$")
-    return red ~= nil and red == green and green == blue
+    return value == "0" or value:match("^0[%a%%]*$") ~= nil
 end
 
 local function normalize_start_tag(token)
@@ -882,18 +854,14 @@ local function normalize_start_tag(token)
                         end
                     end
                     value = escape_invalid_xml_entities(value):gsub("<", "&lt;")
-                    if attribute:lower() == "style" then
+                    if attribute:lower() == "style"
+                        and (name:lower() == "html" or name:lower() == "body") then
                         value = value:gsub("([^;]+)(;?)", function(declaration, terminator)
                             local property, style_value = declaration:match(
                                 "^%s*([%w%-]+)%s*:%s*(.-)%s*$")
-                            if property then
-                                property = property:lower()
-                                if property == "font-size" and is_fixed_font_size(style_value) then
-                                    return ""
-                                elseif (property == "color" or property == "background-color")
-                                    and is_theme_neutral_color(style_value) then
-                                    return ""
-                                end
+                            if property and property:lower() == "font-size"
+                                and is_zero_font_size(style_value) then
+                                return ""
                             end
                             return declaration .. terminator
                         end)
@@ -1233,7 +1201,7 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
 </nav>
 </body>
 </html>]]
-    css = ReaderStyles.compose(css or [[body { line-height: 1.7; margin: 5%; }]])
+    css = ReaderStyles.compose(css or "")
     local entries = {
         { name = "mimetype", data = "application/epub+zip" },
         { name = "META-INF/container.xml", data = [[<?xml version="1.0" encoding="utf-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>]] },
@@ -1363,7 +1331,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 </nav>
 </body>
 </html>]]
-    css = ReaderStyles.compose(css or [[body { line-height: 1.7; margin: 5%; }]])
+    css = ReaderStyles.compose(css or "")
     table.insert(entries, { name = "OEBPS/content.opf", data = opf })
     table.insert(entries, { name = "OEBPS/nav.xhtml", data = nav })
     table.insert(entries, { name = "OEBPS/toc.ncx", data = ncx })
@@ -1828,20 +1796,9 @@ function Content.fetch_chapter_xhtml(client, settings, book, chapter)
     return payload.xhtml
 end
 
--- True when the text following the literal "0" of a font-size declaration
--- (already captured by the caller's pattern) is only an optional unit plus
--- whitespace and an optional !important flag, i.e. the declared size really is
--- zero. Zero times any unit is still zero length, so an empty tail (bare 0) and
--- every letter-unit form (px/em/rem/vh/...) count; fractional sizes such as
--- 0.5rem never match because "." is not a letter.
-local function is_zero_font_size(tail)
-    local value = tail:lower():match("^%s*(.-)%s*$")
-    if value:sub(-10) == "!important" then
-        value = (value:match("^(.-)%s*!important$") or ""):match("^%s*(.-)%s*$")
-    end
-    return value == "" or value == "%" or value:match("^%a+$") ~= nil
-end
-
+-- Root-level `font-size: 0` collapses the full chapter in KOReader. This is
+-- the only author style changed; other stylesheet and inline declarations pass
+-- through unchanged.
 -- Known limitations: property-name matching is case-sensitive (observed WeRead
 -- shards use lowercase), CSS comments can contain text that resembles a
 -- declaration, and root zero-size rules nested in @media blocks are not parsed.
@@ -1866,7 +1823,7 @@ end
 local function strip_zero_font_sizes(block)
     local removed = 0
     local cleaned = ("{" .. block):gsub("([^%w%-])(%s*)font%-size%s*:%s*0([^;}]*)(;?)", function(boundary, leading, tail, _terminator)
-        if not is_zero_font_size(tail) then
+        if not is_zero_font_size("0" .. tail) then
             return nil -- keep fractional sizes such as 0.5rem untouched
         end
         removed = removed + 1
@@ -1875,35 +1832,8 @@ local function strip_zero_font_sizes(block)
     return cleaned:sub(2), removed
 end
 
-local function strip_fixed_font_sizes(block)
-    local removed = 0
-    local cleaned = ("{" .. block):gsub("([^%w%-])(%s*)font%-size%s*:%s*([^;}]*)(;?)",
-        function(boundary, leading, tail, _terminator)
-            if is_fixed_font_size(tail) then
-                removed = removed + 1
-                return boundary .. leading
-            end
-        end)
-    return cleaned:sub(2), removed
-end
-
-local function strip_theme_neutral_colors(block)
-    local removed = 0
-    local cleaned = "{" .. block
-    for _, property_pattern in ipairs({ "background%-color", "color" }) do
-        cleaned = cleaned:gsub("([^%w%-])(%s*)" .. property_pattern
-            .. "%s*:%s*([^;}]*)(;?)", function(boundary, leading, value, _terminator)
-                if not is_theme_neutral_color(value) then return nil end
-                removed = removed + 1
-                return boundary .. leading
-            end)
-    end
-    return cleaned:sub(2), removed
-end
-
--- Remove root zero-size rules, absolute font sizes, and neutral text colors
--- from native book CSS. KOReader scales relative sizes and supplies the page's
--- black/white theme, while intentional colored formatting and layout remain.
+-- Remove only hostile root zero-size rules from native book CSS. Preserve all
+-- other author declarations (fonts, sizes, colors and layout).
 local function sanitize_book_css_pass(css)
     local removed = 0
     -- Scan whole `selector { block }` units (balanced braces); untouched units
@@ -1918,14 +1848,6 @@ local function sanitize_book_css_pass(css)
             local dropped
             cleaned, dropped = strip_zero_font_sizes(cleaned)
             removed = removed + dropped
-        end
-        local fixed_cleaned, fixed_dropped = strip_fixed_font_sizes(cleaned)
-        cleaned = fixed_cleaned
-        removed = removed + fixed_dropped
-        if selectors:gsub("%s", "") ~= "" then
-            local themed_cleaned, theme_dropped = strip_theme_neutral_colors(cleaned)
-            cleaned = themed_cleaned
-            removed = removed + theme_dropped
         end
         return prelude .. "{" .. cleaned .. "}"
     end)

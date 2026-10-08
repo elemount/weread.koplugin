@@ -84,6 +84,12 @@ cleaned, count = Content.sanitize_book_css("p { font-size: 1rem; }")
 expect(count == 0 and cleaned == "p { font-size: 1rem; }",
     "non-zero font-size must stay untouched")
 
+local quote_typography = [[blockquote { font-family: "Book Serif"; font-size: 18px; color: #222; }
+.quote-text { font-family: "Book Quote"; font-size: 14pt; background-color: white; }]]
+cleaned, count = Content.sanitize_book_css(quote_typography)
+expect(count == 0 and cleaned == quote_typography,
+    "book typography and color declarations must be preserved unchanged")
+
 cleaned, count = Content.sanitize_book_css("{ color: #000; font-size: 0\n}")
 expect(count == 0 and cleaned:find("font-size: 0", 1, true),
     "a block without a selector must be left untouched")
