@@ -171,10 +171,14 @@ for _, call in ipairs(archive_calls) do
     end
 end
 local image_defaults = saved_css and saved_css:find("img {", 1, true)
-local book_styles = saved_css and saved_css:find(book_css, 1, true)
+local book_styles = saved_css and saved_css:find(
+    'blockquote { font-family: "Book Serif"; font-size: 1.28571429rem; }', 1, true)
+local point_size_styles = saved_css and saved_css:find(
+    '.quote-text { font-family: "Book Quote"; font-size: 1.33333333rem; }', 1, true)
 local reader_geometry = saved_css and saved_css:find("html, body {\n    width: auto !important;", 1, true)
-expect(saved_css and book_styles and image_defaults and image_defaults < book_styles,
-    "book CSS must remain intact and follow plugin image defaults")
+expect(saved_css and book_styles and point_size_styles and image_defaults
+        and image_defaults < book_styles,
+    "book CSS typography must be preserved with fixed sizes converted after plugin defaults")
 expect(saved_css and book_styles and reader_geometry and book_styles < reader_geometry,
     "only root viewport constraints may follow the book stylesheet")
 expect(saved_css and not saved_css:find("font-size: 1em !important", 1, true)
@@ -182,7 +186,7 @@ expect(saved_css and not saved_css:find("font-size: 1em !important", 1, true)
         and not saved_css:find("color: inherit !important", 1, true),
     "plugin CSS must not force author typography or colors to KOReader defaults")
 expect(saved_chapter and saved_chapter:find("font-family: 'Inline Quote'", 1, true)
-        and saved_chapter:find("font-size: 19px", 1, true)
+        and saved_chapter:find("font-size: 1.35714286rem", 1, true)
         and saved_chapter:find("color: #333", 1, true)
         and saved_chapter:find("background-color: white", 1, true),
     "XHTML normalization changed inline book typography or colors")
