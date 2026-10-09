@@ -29,6 +29,7 @@ local defaults = {
     },
     cache = {
         download_book_images = true,
+        capture_raw_archives = false,
         download_underlines_and_thoughts = false,
         prefetch_annotations = false,
         auto_prefetch_next_chapter = false,

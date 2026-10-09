@@ -25,6 +25,7 @@ local image = "\137PNG\r\n\026\n" .. "test-image-bytes"
 local tar = tar_entry("chapter-assets/figure.png", image) .. string.rep("\0", 1024)
 local requested_url
 local requested_headers
+local captured_tar
 local client = {
     native_headers = function(_self, extra)
         return {
@@ -36,13 +37,16 @@ local client = {
     get_binary = function(_self, url, opts)
         requested_url = url
         requested_headers = opts.headers
-        return tar
+        return tar, 200, { ["Content-Type"] = "application/x-tar" }
     end,
 }
 
 local assets = NativeChapter.fetch_image_tar(client, {
+    chapterUid = 42,
     tar = "https://res.weread.qq.com/chapter-assets.tar",
-})
+}, function(kind, chapters, data, metadata)
+    captured_tar = { kind = kind, chapter = chapters[1], data = data, metadata = metadata }
+end)
 expect(requested_url == "https://res.weread.qq.com/chapter-assets.tar",
     "image TAR URL was not requested")
 expect(requested_headers.vid == "fixture-vid"
@@ -52,6 +56,10 @@ expect(#assets == 1 and assets[1].name == "figure.png",
     "TAR member path was not reduced to its basename")
 expect(assets[1].data == image,
     "TAR image bytes were modified during extraction")
+expect(captured_tar and captured_tar.kind == "images"
+    and captured_tar.chapter.chapterUid == 42 and captured_tar.data == tar
+    and captured_tar.metadata.content_type == "application/x-tar",
+    "raw image TAR was not passed to the debug cache callback")
 
 local before = requested_url
 local ok = pcall(function()

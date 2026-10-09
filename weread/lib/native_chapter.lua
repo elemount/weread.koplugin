@@ -189,7 +189,7 @@ local function extract_zip(data, password)
     if archive == nil then error("could not allocate ZIP reader") end
     local input = ffi.new("uint8_t[?]", #data)
     ffi.copy(input, data, #data)
-    local entries, total = {}, 0
+    local entries, entry_order, total = {}, {}, 0
     local ok, err = pcall(function()
         lib.archive_read_support_filter_all(archive)
         if lib.archive_read_support_format_zip(archive) < 0 then error("ZIP support initialization failed") end
@@ -224,12 +224,15 @@ local function extract_zip(data, password)
                 end
                 chunks[#chunks + 1] = ffi.string(chunk, count)
             end
-            if path ~= "" then entries[path] = table.concat(chunks) end
+            if path ~= "" then
+                entries[path] = table.concat(chunks)
+                entry_order[#entry_order + 1] = path
+            end
         end
     end)
     lib.archive_read_free(archive)
     if not ok then error(err, 0) end
-    return entries
+    return entries, entry_order
 end
 
 local function extract_tar(data)
@@ -256,7 +259,7 @@ local function extract_tar(data)
     return entries
 end
 
-function NativeChapter.fetch_image_tar(client, chapter)
+function NativeChapter.fetch_image_tar(client, chapter, capture_raw)
     local url = tostring(chapter and chapter.tar or "")
     if url == "" then return {} end
     -- Chapter.tar is supplied by WeRead's chapter catalog. Keep the image
@@ -270,10 +273,19 @@ function NativeChapter.fetch_image_tar(client, chapter)
     local headers = client:native_headers({
         Referer = "https://weread.qq.com/",
     })
-    local data = client:get_binary(url, {
+    local data, _, response_headers = client:get_binary(url, {
         headers = headers,
         referer = "https://weread.qq.com/",
     })
+    if type(capture_raw) == "function" then
+        local metadata = {}
+        for name, value in pairs(response_headers or {}) do
+            if tostring(name):lower() == "content-type" then
+                metadata.content_type = value
+            end
+        end
+        pcall(capture_raw, "images", { chapter }, data, metadata)
+    end
     local entries = extract_tar(data)
     if #data > 0 and next(entries) == nil then
         error("chapter image TAR did not contain readable files")
@@ -379,13 +391,54 @@ local function looks_like_markup(value)
     return prefix:match("^%s*<[%w!?/]") ~= nil
 end
 
+local function looks_like_stylesheet(value)
+    if type(value) ~= "string" or not value:find("{", 1, true)
+        or not value:find("}", 1, true) or not value:find(":", 1, true) then
+        return false
+    end
+    local printable = 0
+    for index = 1, #value do
+        local byte = value:byte(index)
+        if byte >= 32 or byte == 9 or byte == 10 or byte == 13 then
+            printable = printable + 1
+        end
+    end
+    return #value > 0 and printable / #value >= 0.9
+end
+
 decrypt_file_if_needed = function(data, book_id)
-    if looks_like_markup(data) then return data end
+    if looks_like_markup(data) or looks_like_stylesheet(data) then return data end
     local decoded = xor_book_bytes(data, book_id)
-    if looks_like_markup(decoded) then return decoded end
-    if (data:find("{", 1, true) and data:find("}", 1, true)) then return data end
-    if decoded:find("{", 1, true) and decoded:find("}", 1, true) then return decoded end
+    if looks_like_markup(decoded) or looks_like_stylesheet(decoded) then return decoded end
     return data
+end
+
+function NativeChapter.extract_stylesheets(entries, entry_order, book_id)
+    if type(entries) ~= "table" then return nil end
+    local names, seen = {}, {}
+    local function add_name(name)
+        if type(name) ~= "string" or not name:lower():match("%.css$")
+            or seen[name] or type(entries[name]) ~= "string" then
+            return
+        end
+        seen[name] = true
+        names[#names + 1] = name
+    end
+    for _, name in ipairs(type(entry_order) == "table" and entry_order or {}) do
+        add_name(name)
+    end
+    if #names == 0 then
+        for name in pairs(entries) do add_name(name) end
+        table.sort(names, function(left, right)
+            return left:lower() < right:lower()
+        end)
+    end
+    if #names == 0 then return nil end
+    local stylesheets = {}
+    for _, name in ipairs(names) do
+        stylesheets[#stylesheets + 1] = decrypt_file_if_needed(entries[name], book_id)
+    end
+    return table.concat(stylesheets, "\n")
 end
 
 function NativeChapter.decrypt_asset(data, book_id)
@@ -457,6 +510,21 @@ function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, opt
     local body, _, headers = client:native_get_binary("/book/chapterdownload", params, {
         referer = "https://weread.qq.com/",
     })
+    local encryptkey, content_type
+    for name, value in pairs(headers or {}) do
+        local lower_name = tostring(name):lower()
+        if lower_name == "encryptkey" then
+            encryptkey = value
+        elseif lower_name == "content-type" then
+            content_type = value
+        end
+    end
+    if type(options.capture_raw) == "function" then
+        pcall(options.capture_raw, "chapter-" .. book_type, chapters, body, {
+            encryptkey = encryptkey,
+            content_type = content_type,
+        })
+    end
     if book_type == "txt" then
         local entries = extract_tar(body)
         local payloads = {}
@@ -470,16 +538,12 @@ function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, opt
         end
         return payloads
     end
-    local encryptkey
-    for name, value in pairs(headers or {}) do
-        if tostring(name):lower() == "encryptkey" then encryptkey = value; break end
-    end
     if type(encryptkey) ~= "string" or encryptkey == "" then
         error("chapter response is missing encryptkey header")
     end
     local aes_key, aes_iv = repeated_vid_key(vid)
     local zip_password = aes_cbc_decrypt(base64_decode(encryptkey), aes_key, aes_iv)
-    local entries = extract_zip(body, zip_password)
+    local entries, entry_order = extract_zip(body, zip_password)
     local chapters_by_uid, chapter_files = {}, {}
     for _, chapter in ipairs(chapters) do
         local uid = chapter.chapterUid or chapter.chapterId
@@ -494,10 +558,7 @@ function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, opt
         }
         for _, name in ipairs(xhtml_names) do chapter_files[name] = true end
     end
-    local css
-    for name, value in pairs(entries) do
-        if name:lower():match("%.css$") then css = decrypt_file_if_needed(value, book_id); break end
-    end
+    local css = NativeChapter.extract_stylesheets(entries, entry_order, book_id)
     local assets = {}
     for name, value in pairs(entries) do
         if not chapter_files[name] and name ~= "info.txt"
@@ -519,10 +580,11 @@ function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, opt
     return chapters_by_uid
 end
 
-function NativeChapter.fetch(client, book, chapter, json_decode, vid)
+function NativeChapter.fetch(client, book, chapter, json_decode, vid, options)
     local uid = chapter and (chapter.chapterUid or chapter.chapterId)
     if uid == nil then error("book id and chapter uid are required") end
-    local payloads = NativeChapter.fetch_batch(client, book, { chapter }, json_decode, vid)
+    local payloads = NativeChapter.fetch_batch(client, book, { chapter },
+        json_decode, vid, options)
     local payload = payloads[tostring(uid)]
     if not payload then error("chapter archive did not contain the requested chapter") end
     return payload

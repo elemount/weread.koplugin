@@ -108,6 +108,8 @@ expect(thought_popup.height_ratio == 0.70
     "thought popup preferences should use the defaults")
 expect(settings:get("shelf").view_mode == "list",
     "bookshelf should default to the low-overhead list view")
+expect(settings:get("cache").capture_raw_archives ~= true,
+    "raw response archives should not be cached without explicit consent")
 expect(created_dirs[1] == "/data/weread"
     and created_dirs[2] == "/data/weread/cache",
     "settings directories were not initialized")

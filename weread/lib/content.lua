@@ -28,6 +28,29 @@ function Content.book_cache_dir(settings, book_id)
     return settings.cache_dir .. "/" .. Content.book_dir_name(book_id)
 end
 
+local function raw_archive_capture(settings, book)
+    if not settings or type(settings.get) ~= "function"
+        or settings:get("cache", {}).capture_raw_archives ~= true then
+        return nil
+    end
+    local book_id = book and (book.book_id or book.bookId)
+    if not book_id then return nil end
+    local book_dir = Content.book_resolved_dir(settings, book_id, book)
+    return function(kind, chapters, data, metadata)
+        local ok, saved, path_or_error = pcall(function()
+            return require("weread.lib.raw_archive_cache").save(
+                book_dir, kind, chapters, data, metadata)
+        end)
+        if not ok or not saved then
+            logger.warn("raw archive debug cache failed:",
+                tostring(ok and path_or_error or saved))
+        else
+            logger.info("raw archive cached:", "kind=", tostring(kind),
+                "bytes=", tostring(#data))
+        end
+    end
+end
+
 -- Resolve where a book's files actually live. The current settings.cache_dir may
 -- differ from where a book was downloaded (the user changed it since), so prefer
 -- concrete evidence of the real location: an explicit book.cache_dir (set when any
@@ -1490,7 +1513,8 @@ local function native_chapter_assets(client, book, chapter, used_names, asset_di
     end
     if chapter.tar and chapter.tar ~= "" then
         if not chapter_cache.image_tar_assets then
-            local ok, tar_assets = pcall(NativeChapter.fetch_image_tar, client, chapter)
+            local ok, tar_assets = pcall(NativeChapter.fetch_image_tar, client,
+                chapter, raw_archive_capture(client.settings, book))
             if ok then
                 chapter_cache.image_tar_assets = tar_assets
             else
@@ -1634,7 +1658,8 @@ native_payload = function(client, book, chapter)
     local vid = auth.vid
     if type(vid) ~= "string" or vid == "" then vid = account.user_vid end
     local payload = NativeChapter.fetch(client, book, chapter,
-        function(encoded) return client:json_decode(encoded) end, vid)
+        function(encoded) return client:json_decode(encoded) end, vid,
+        { capture_raw = raw_archive_capture(client.settings, book) })
     cache = cache or { payloads = {} }
     cache.payloads = cache.payloads or {}
     cache.payloads[chapter_uid] = payload
@@ -1668,7 +1693,10 @@ function Content.prefetch_chapter_sources(client, book, chapters, offline)
     if type(vid) ~= "string" or vid == "" then vid = account.user_vid end
     return NativeChapter.fetch_batch(client, book, chapters,
         function(encoded) return client:json_decode(encoded) end, vid,
-        { offline = offline == true })
+        {
+            offline = offline == true,
+            capture_raw = raw_archive_capture(client.settings, book),
+        })
 end
 
 function Content.release_chapter_source(book, chapter)

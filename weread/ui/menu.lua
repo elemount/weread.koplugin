@@ -337,6 +337,39 @@ function M:getSettingsMenuItems()
                         end),
                     },
                     {
+                        text = _("Cache raw downloads for debugging"),
+                        keep_menu_open = true,
+                        checked_func = function()
+                            return self.settings:get("cache").capture_raw_archives == true
+                        end,
+                        callback = self:safeCallback(
+                            _("Cache raw downloads for debugging"),
+                            function(touchmenu_instance)
+                                local cache = self.settings:get("cache")
+                                local function apply(enabled)
+                                    cache.capture_raw_archives = enabled
+                                    self.settings:set("cache", cache)
+                                    self.settings:flush()
+                                    logger.info("raw archive debug cache changed:",
+                                        "enabled=", tostring(enabled))
+                                    if touchmenu_instance then
+                                        touchmenu_instance:updateItems()
+                                    end
+                                end
+                                if cache.capture_raw_archives == true then
+                                    apply(false)
+                                    return
+                                end
+                                UIManager:show(ConfirmBox:new{
+                                    text = _([[Raw WeRead chapter and image downloads may contain book content. The chapter decryption header is saved with the archive; account credentials are not. Archives stay on this device, limited to the latest 16 packages and 128 MB per book, under that book's cache folder. Clear the book cache to remove them. Enable raw download caching?]]),
+                                    ok_text = _("Confirm"),
+                                    ok_callback = self:safeCallback(
+                                        _("Confirm"), function() apply(true) end),
+                                    cancel_text = _("Cancel"),
+                                })
+                            end),
+                    },
+                    {
                         text = _("Chapter prefetch"),
                         sub_item_table_func = function()
                             return {
