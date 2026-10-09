@@ -854,17 +854,19 @@ local function normalize_start_tag(token)
                         end
                     end
                     value = escape_invalid_xml_entities(value):gsub("<", "&lt;")
-                    if attribute:lower() == "style"
-                        and (name:lower() == "html" or name:lower() == "body") then
-                        value = value:gsub("([^;]+)(;?)", function(declaration, terminator)
-                            local property, style_value = declaration:match(
-                                "^%s*([%w%-]+)%s*:%s*(.-)%s*$")
-                            if property and property:lower() == "font-size"
-                                and is_zero_font_size(style_value) then
-                                return ""
-                            end
-                            return declaration .. terminator
-                        end)
+                    if attribute:lower() == "style" then
+                        if name:lower() == "html" or name:lower() == "body" then
+                            value = value:gsub("([^;]+)(;?)", function(declaration, terminator)
+                                local property, style_value = declaration:match(
+                                    "^%s*([%w%-]+)%s*:%s*(.-)%s*$")
+                                if property and property:lower() == "font-size"
+                                    and is_zero_font_size(style_value) then
+                                    return ""
+                                end
+                                return declaration .. terminator
+                            end)
+                        end
+                        value = ReaderStyles.scale_inline_font_sizes(value)
                     end
                     local attribute_key = attribute:lower()
                     if not seen_attributes[attribute_key] then
@@ -888,11 +890,17 @@ end
 local function normalize_xhtml_fragment(fragment)
     fragment = tostring(fragment or ""):gsub("[%z\1-\8\11\12\14-\31]", "")
     local out, stack = {}, {}
+    local function append_text(value)
+        if stack[#stack] and stack[#stack]:lower() == "style" then
+            value = ReaderStyles.scale_font_sizes(value)
+        end
+        out[#out + 1] = escape_invalid_xml_entities(value)
+    end
     local cursor = 1
     while true do
         local start = fragment:find("<", cursor, true)
         if not start then break end
-        out[#out + 1] = escape_invalid_xml_entities(fragment:sub(cursor, start - 1))
+        append_text(fragment:sub(cursor, start - 1))
         local finish = markup_token_end(fragment, start)
         local token = fragment:sub(start, finish)
         local name, closing, self_closing = tag_token(fragment, start, finish)
@@ -932,7 +940,7 @@ local function normalize_xhtml_fragment(fragment)
         end
         cursor = finish + 1
     end
-    out[#out + 1] = escape_invalid_xml_entities(fragment:sub(cursor))
+    append_text(fragment:sub(cursor))
     for index = #stack, 1, -1 do
         out[#out + 1] = "</" .. stack[index] .. ">"
     end
@@ -1855,9 +1863,10 @@ function Content.fetch_chapter_xhtml(client, settings, book, chapter)
     return payload.xhtml
 end
 
--- Root-level `font-size: 0` collapses the full chapter in KOReader. This is
--- the only author style changed; other stylesheet and inline declarations pass
--- through unchanged.
+-- Root-level `font-size: 0` collapses the full chapter in KOReader, so source
+-- stylesheet and root inline declarations with that value are removed. EPUB
+-- packaging separately scales fixed absolute font lengths to KOReader-relative
+-- rem values while preserving the original size ratios.
 -- Known limitations: property-name matching is case-sensitive (observed WeRead
 -- shards use lowercase), CSS comments can contain text that resembles a
 -- declaration, and root zero-size rules nested in @media blocks are not parsed.
