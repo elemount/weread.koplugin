@@ -108,6 +108,15 @@ local chapters = {
     { chapterUid = 10 },
     { chapterUid = 11 },
 }
+local requests_with_stylesheet, request_ids =
+    NativeChapter.request_chapters_with_stylesheet(chapters, true)
+expect(request_ids == "0,10-12" and requests_with_stylesheet[1].chapterUid == 0
+        and #requests_with_stylesheet == #chapters + 1,
+    "initial EPUB request omitted the APK's shared stylesheet chapter UID 0")
+local requests_without_stylesheet, ordinary_ids =
+    NativeChapter.request_chapters_with_stylesheet(chapters, false)
+expect(ordinary_ids == "10-12" and #requests_without_stylesheet == #chapters,
+    "subsequent chapter batches should not refetch the shared stylesheet package")
 local payloads = NativeChapter.fetch_batch(client, {
     book_id = "42",
     format = "txt",
@@ -133,6 +142,7 @@ expect(payloads["10"].text == "chapter ten"
 expect(captured_archive and captured_archive.kind == "chapter-txt"
         and captured_archive.bytes:find("42_10", 1, true)
         and captured_archive.metadata.content_type == "application/x-tar"
+        and captured_archive.chapters[1].chapterUid == 12
         and #captured_archive.chapters == 3,
     "original chapter archive was not passed to the debug cache callback")
 

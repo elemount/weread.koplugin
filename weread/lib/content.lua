@@ -1648,7 +1648,12 @@ native_payload = function(client, book, chapter)
     if chapter_uid == "" then error("chapter is required") end
     Content.ensure_book_info(client, book)
     local cache = native_chapter_cache[book]
-    if cache and cache.payloads and cache.payloads[chapter_uid] then
+    if not cache then
+        cache = { payloads = {} }
+        native_chapter_cache[book] = cache
+    end
+    cache.payloads = cache.payloads or {}
+    if cache.payloads[chapter_uid] then
         cache.uid = chapter_uid
         cache.payload = cache.payloads[chapter_uid]
         return cache.payload
@@ -1657,11 +1662,20 @@ native_payload = function(client, book, chapter)
     local account = client.settings and client.settings:get("account", {}) or {}
     local vid = auth.vid
     if type(vid) ~= "string" or vid == "" then vid = account.user_vid end
+    local include_stylesheet = cache.stylesheet_attempted ~= true
+        and (type(cache.book_css) ~= "string" or cache.book_css == "")
     local payload = NativeChapter.fetch(client, book, chapter,
         function(encoded) return client:json_decode(encoded) end, vid,
-        { capture_raw = raw_archive_capture(client.settings, book) })
-    cache = cache or { payloads = {} }
-    cache.payloads = cache.payloads or {}
+        {
+            include_stylesheet = include_stylesheet,
+            capture_raw = raw_archive_capture(client.settings, book),
+        })
+    if include_stylesheet then cache.stylesheet_attempted = true end
+    if type(payload.css) == "string" and payload.css ~= "" then
+        cache.book_css = payload.css
+    elseif type(cache.book_css) == "string" then
+        payload.css = cache.book_css
+    end
     cache.payloads[chapter_uid] = payload
     cache.uid = chapter_uid
     cache.payload = payload
@@ -1684,7 +1698,7 @@ function Content.chapter_download_batch_size(book)
     return 25
 end
 
-function Content.prefetch_chapter_sources(client, book, chapters, offline)
+function Content.prefetch_chapter_sources(client, book, chapters, offline, include_stylesheet)
     if type(chapters) ~= "table" or #chapters == 0 then return {} end
     Content.ensure_book_info(client, book)
     local auth = client.settings and client.settings:get("auth", {}) or {}
@@ -1695,6 +1709,7 @@ function Content.prefetch_chapter_sources(client, book, chapters, offline)
         function(encoded) return client:json_decode(encoded) end, vid,
         {
             offline = offline == true,
+            include_stylesheet = include_stylesheet == true,
             capture_raw = raw_archive_capture(client.settings, book),
         })
 end

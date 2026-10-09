@@ -484,6 +484,20 @@ local function build_chapter_ids(chapters)
     return table.concat(ranges, ",")
 end
 
+function NativeChapter.request_chapters_with_stylesheet(chapters, include_stylesheet)
+    local requested = {}
+    if include_stylesheet then
+        -- The e-ink APK prepends UID 0 to the first EPUB request. It carries
+        -- shared EPUB resources such as Styles/stylesheets.css, not a catalog
+        -- chapter and must not be added to the generated book spine.
+        requested[#requested + 1] = { chapterUid = 0 }
+    end
+    for _i, chapter in ipairs(chapters or {}) do
+        requested[#requested + 1] = chapter
+    end
+    return requested, build_chapter_ids(requested)
+end
+
 function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, options)
     options = options or {}
     local book_id = tostring(book.book_id or book.bookId or "")
@@ -492,9 +506,11 @@ function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, opt
     end
     local format = tostring(book.format or book.bookType or chapters[1].format or "epub"):lower()
     local book_type = format:find("txt", 1, true) and "txt" or "epub"
+    local request_chapters, chapter_ids = NativeChapter.request_chapters_with_stylesheet(
+        chapters, book_type == "epub" and options.include_stylesheet == true)
     local params = {
         bookId = book_id,
-        chapters = build_chapter_ids(chapters),
+        chapters = chapter_ids,
         pf = "wechat_wx-2001-android-100-weread",
         pfkey = "pfKey",
         zoneId = "1",
@@ -520,7 +536,7 @@ function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, opt
         end
     end
     if type(options.capture_raw) == "function" then
-        pcall(options.capture_raw, "chapter-" .. book_type, chapters, body, {
+        pcall(options.capture_raw, "chapter-" .. book_type, request_chapters, body, {
             encryptkey = encryptkey,
             content_type = content_type,
         })
@@ -557,6 +573,11 @@ function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, opt
             format = "epub",
         }
         for _, name in ipairs(xhtml_names) do chapter_files[name] = true end
+    end
+    if options.include_stylesheet then
+        local _stylesheet, shared_files = chapter_file(
+            entries, 0, json_decode, book_id, false)
+        for _, name in ipairs(shared_files or {}) do chapter_files[name] = true end
     end
     local css = NativeChapter.extract_stylesheets(entries, entry_order, book_id)
     local assets = {}

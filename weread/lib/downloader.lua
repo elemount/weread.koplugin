@@ -1344,6 +1344,8 @@ function Downloader:_step(dl)
             local batch_payloads = dl.batch_payloads
             local source_payload = batch_payloads and batch_payloads[uid] or nil
             local fetched_batch = false
+            local include_stylesheet = dl.state.stylesheet_fetch_attempted ~= true
+                and (type(dl.state.css) ~= "string" or dl.state.css == "")
             if not source_payload and #dl.chapters > 1 and not dl.single_chapter then
                 local batch, limit = {}, Content.chapter_download_batch_size(dl.book)
                 for chapter_index = dl.index, dl.total do
@@ -1354,10 +1356,13 @@ function Downloader:_step(dl)
                 end
                 if #batch == 0 then batch[1] = chapter end
                 batch_payloads = Content.prefetch_chapter_sources(
-                    self.client, dl.book, batch, dl.resumable)
+                    self.client, dl.book, batch, dl.resumable, include_stylesheet)
                 source_payload = batch_payloads[uid]
                 if not source_payload then
                     error("batched chapter response omitted chapter " .. uid)
+                end
+                if include_stylesheet then
+                    dl.state.stylesheet_fetch_attempted = true
                 end
                 fetched_batch = true
             end
