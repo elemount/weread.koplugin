@@ -575,7 +575,7 @@ function NativeChapter.fetch_batch(client, book, chapters, json_decode, vid, opt
         for _, name in ipairs(xhtml_names) do chapter_files[name] = true end
     end
     if options.include_stylesheet then
-        local _stylesheet, shared_files = chapter_file(
+        local _, shared_files = chapter_file(
             entries, 0, json_decode, book_id, false)
         for _, name in ipairs(shared_files or {}) do chapter_files[name] = true end
     end
