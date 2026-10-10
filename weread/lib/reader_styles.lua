@@ -373,8 +373,10 @@ img[keepfit="1"] {
 }
 img.h-pic {
     display: inline;
+    width: auto;
+    height: 1em;
     max-width: 100%;
-    height: auto;
+    vertical-align: baseline;
 }
 ]]
 

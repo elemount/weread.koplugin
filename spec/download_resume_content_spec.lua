@@ -119,7 +119,8 @@ expect(not io.open(workspace.rendered_text_dir .. "/stale.xhtml", "rb"),
     "rendered chapter workspace was not reset")
 expect(Content.full_download_chapter_exists(workspace, chapters[1], 1),
     "resetting rendered chapters removed the pristine checkpoint")
-Content.save_full_download_rendered_chapter(workspace, chapters[1], 1, "<p>rendered first</p>")
+Content.save_full_download_rendered_chapter(workspace, chapters[1], 1,
+    '<h2 id="streamed-anchor">Streamed &amp; linked</h2><h3>Streamed label</h3>')
 Content.save_full_download_rendered_chapter(workspace, chapters[2], 2, "<p>rendered second</p>")
 expect(Content.full_download_rendered_chapter_exists(workspace, chapters[1], 1)
     and Content.full_download_rendered_chapter_exists(workspace, chapters[2], 2),
@@ -166,6 +167,16 @@ for _, call in ipairs(archive_calls) do
     end
 end
 expect(streamed_text, "EPUB writer did not stream the checkpoint text directory")
+local streamed_nav
+for _, call in ipairs(archive_calls) do
+    if call.kind == "memory" and call.name == "OEBPS/nav.xhtml" then
+        streamed_nav = call.data
+    end
+end
+expect(streamed_nav and streamed_nav:find(
+    'text/chapter-001.xhtml#streamed-anchor', 1, true)
+        and streamed_nav:find("<span>Streamed label</span>", 1, true),
+    "TOC headings were not extracted from streamed XHTML files")
 
 Content.cleanup_download_workspace(workspace)
 expect(not io.open(workspace.text_dir .. "/chapter-001.xhtml", "rb"),

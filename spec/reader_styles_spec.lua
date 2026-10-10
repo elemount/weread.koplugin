@@ -24,6 +24,10 @@ expect(css:find('img[keepFit="1"]', 1, true) ~= nil
 expect(css:find(".eepub-single-image-title", 1, true) ~= nil
         and css:find("text-align: center", 1, true) ~= nil,
     "APK image captions get centered caption styling")
+local h_pic_rule = css:match("img%.h%-pic%s*{([^}]*)}")
+expect(h_pic_rule ~= nil and h_pic_rule:find("height: 1em", 1, true) ~= nil
+        and h_pic_rule:find("width: auto", 1, true) ~= nil,
+    "inline text-replacement images are sized to the text em")
 expect(css:find("max-height: 90vh", 1, true) ~= nil
         and css:find("page-break-inside: avoid", 1, true) ~= nil,
     "full-page images are fitted and kept together")

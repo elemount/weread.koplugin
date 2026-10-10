@@ -130,7 +130,7 @@ local book = {
 }
 local book_css = [[blockquote { font-family: "Book Serif"; font-size: 18px; }
 .quote-text { font-family: "Book Quote"; font-size: 14pt; }]]
-local quote_xhtml = [[<blockquote class="quote-text" style="font-family: 'Inline Quote'; font-size: 19px; color: #333; background-color: white">quoted text</blockquote>]]
+local quote_xhtml = [[<h1>Chapter</h1><h2 id="section-a">Section &amp; A</h2><h3>Unlinked subsection</h3><blockquote class="quote-text" style="font-family: 'Inline Quote'; font-size: 19px; color: #333; background-color: white">quoted text</blockquote>]]
 local output = Content.save_book_epub(settings, book,
     { { chapterUid = 7, title = "Chapter" } },
     { ["7"] = quote_xhtml }, "book", assets, book_css)
@@ -162,12 +162,16 @@ expect(opf:find(
     "book introduction was not safely embedded as dc:description")
 expect(opf:find("\0", 1, true) == nil and opf:find("\1", 1, true) == nil,
     "XML-illegal control characters remained in the OPF metadata")
-local saved_css, saved_chapter
+local saved_css, saved_chapter, saved_nav, saved_ncx
 for _, call in ipairs(archive_calls) do
     if call.kind == "memory" and call.name == "OEBPS/style.css" then
         saved_css = call.data
     elseif call.kind == "memory" and call.name == "OEBPS/text/chapter-001.xhtml" then
         saved_chapter = call.data
+    elseif call.kind == "memory" and call.name == "OEBPS/nav.xhtml" then
+        saved_nav = call.data
+    elseif call.kind == "memory" and call.name == "OEBPS/toc.ncx" then
+        saved_ncx = call.data
     end
 end
 local image_defaults = saved_css and saved_css:find("img {", 1, true)
@@ -190,6 +194,18 @@ expect(saved_chapter and saved_chapter:find("font-family: 'Inline Quote'", 1, tr
         and saved_chapter:find("color: #333", 1, true)
         and saved_chapter:find("background-color: white", 1, true),
     "XHTML normalization changed inline book typography or colors")
+expect(saved_nav and saved_nav:find(
+    '<li><a href="text/chapter-001.xhtml#section-a">Section &amp; A</a>', 1, true)
+        and saved_nav:find("<li><span>Unlinked subsection</span>", 1, true),
+    "EPUB3 navigation must link anchored headings and retain unlinked headings as labels")
+expect(saved_nav and saved_nav:find(
+    '<ol>%s*<li><a href="text/chapter%-001%.xhtml#section%-a">')
+        and saved_nav:find('<ol>%s*<li><span>Unlinked subsection</span>'),
+    "heading navigation hierarchy or nesting was lost")
+expect(saved_ncx and saved_ncx:find("Section &amp; A", 1, true)
+        and saved_ncx:find('chapter-001.xhtml#section-a', 1, true)
+        and not saved_ncx:find("Unlinked subsection", 1, true),
+    "legacy NCX must include jumpable headings only")
 
 local old = assert(io.open(output, "wb"))
 old:write("known-good-old-epub")

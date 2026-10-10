@@ -1051,67 +1051,242 @@ local function chapter_level(chapter)
     return level
 end
 
-local function build_chapter_tree(chapters, filename_for)
+local function utf8_character(codepoint)
+    if not codepoint or codepoint < 0 or codepoint > 0x10FFFF
+        or (codepoint >= 0xD800 and codepoint <= 0xDFFF) then
+        return "\239\191\189"
+    elseif codepoint < 0x80 then
+        return string.char(codepoint)
+    elseif codepoint < 0x800 then
+        return string.char(0xC0 + math.floor(codepoint / 0x40),
+            0x80 + codepoint % 0x40)
+    elseif codepoint < 0x10000 then
+        return string.char(0xE0 + math.floor(codepoint / 0x1000),
+            0x80 + math.floor(codepoint / 0x40) % 0x40,
+            0x80 + codepoint % 0x40)
+    end
+    return string.char(0xF0 + math.floor(codepoint / 0x40000),
+        0x80 + math.floor(codepoint / 0x1000) % 0x40,
+        0x80 + math.floor(codepoint / 0x40) % 0x40,
+        0x80 + codepoint % 0x40)
+end
+
+local xml_entity_characters = {
+    amp = "&", apos = "'", gt = ">", lt = "<", quot = '"',
+    nbsp = " ", ndash = "–", mdash = "—", hellip = "…",
+    ldquo = "“", rdquo = "”", lsquo = "‘", rsquo = "’",
+    copy = "©", reg = "®", trade = "™", bull = "•",
+}
+
+local function decode_xml_text(value)
+    return (value or ""):gsub("&([%w#]+);", function(entity)
+        local named = xml_entity_characters[entity]
+        if named then return named end
+        local codepoint
+        if entity:match("^#%d+$") then
+            codepoint = tonumber(entity:sub(2))
+        elseif entity:match("^#x%x+$") then
+            codepoint = tonumber(entity:sub(3), 16)
+        end
+        return codepoint and utf8_character(codepoint) or ("&" .. entity .. ";")
+    end)
+end
+
+local function tag_attribute(token, wanted)
+    local _, tag_end = token:find("^<%s*/?%s*[%w:_%-]+")
+    if not tag_end then return nil end
+    local cursor = tag_end + 1
+    while cursor <= #token do
+        local whitespace = token:sub(cursor):match("^(%s+)")
+        if whitespace then cursor = cursor + #whitespace end
+        local char = token:sub(cursor, cursor)
+        if char == ">" or char == "/" or char == "" then return nil end
+        local attribute = token:sub(cursor):match("^([%w:_%-]+)")
+        if not attribute then
+            cursor = cursor + 1
+        else
+            cursor = cursor + #attribute
+            local spacing = token:sub(cursor):match("^(%s*)") or ""
+            cursor = cursor + #spacing
+            local value
+            if token:sub(cursor, cursor) == "=" then
+                cursor = cursor + 1
+                local equals_spacing = token:sub(cursor):match("^(%s*)") or ""
+                cursor = cursor + #equals_spacing
+                local quote = token:sub(cursor, cursor)
+                if quote == '"' or quote == "'" then
+                    local close = token:find(quote, cursor + 1, true)
+                    if not close then return nil end
+                    value = token:sub(cursor + 1, close - 1)
+                    cursor = close + 1
+                else
+                    value = token:sub(cursor):match("^([^%s>]+)") or ""
+                    cursor = cursor + #value
+                    if value:sub(-1) == "/" and token:sub(cursor, cursor) == ">" then
+                        value = value:sub(1, -2)
+                    end
+                end
+            end
+            if attribute:lower() == wanted:lower() then
+                return value and decode_xml_text(value) or nil
+            end
+        end
+    end
+end
+
+local function extract_toc_headings(xhtml)
+    local headings, active
+    headings = {}
+    local cursor = 1
+    while cursor <= #(xhtml or "") do
+        local start = xhtml:find("<", cursor, true)
+        if not start then
+            if active then active.text[#active.text + 1] = xhtml:sub(cursor) end
+            break
+        end
+        if active then active.text[#active.text + 1] = xhtml:sub(cursor, start - 1) end
+        local finish = markup_token_end(xhtml, start)
+        local token = xhtml:sub(start, finish)
+        local name, closing = tag_token(xhtml, start, finish)
+        if name then
+            name = name:lower()
+            local heading_level = tonumber(name:match("^h([2-6])$"))
+            if heading_level and not closing then
+                if active then
+                    local title = decode_xml_text(table.concat(active.text))
+                        :gsub("%s+", " "):match("^%s*(.-)%s*$")
+                    if title ~= "" then
+                        active.title = title
+                        headings[#headings + 1] = active
+                    end
+                end
+                local id = tag_attribute(token, "id")
+                active = {
+                    level = heading_level,
+                    id = id ~= "" and id or nil,
+                    text = {},
+                }
+            elseif active and closing and name == "h" .. tostring(active.level) then
+                local title = decode_xml_text(table.concat(active.text))
+                    :gsub("%s+", " "):match("^%s*(.-)%s*$")
+                if title ~= "" then
+                    active.title = title
+                    headings[#headings + 1] = active
+                end
+                active = nil
+            elseif active and not closing and name == "br" then
+                active.text[#active.text + 1] = " "
+            end
+        end
+        cursor = finish + 1
+    end
+    if active then
+        local title = decode_xml_text(table.concat(active.text))
+            :gsub("%s+", " "):match("^%s*(.-)%s*$")
+        if title ~= "" then
+            active.title = title
+            headings[#headings + 1] = active
+        end
+    end
+    return headings
+end
+
+local function append_heading_tree(parent, headings, chapter_href)
     local root = { children = {} }
     local stack = { root }
+    for _i, heading in ipairs(headings or {}) do
+        local level = math.max(1, heading.level - 1)
+        if level > #stack then level = #stack end
+        while #stack > level do table.remove(stack) end
+        local node = {
+            title = heading.title,
+            href = heading.id and (chapter_href .. "#" .. heading.id) or nil,
+            children = {},
+        }
+        table.insert(stack[#stack].children, node)
+        stack[level + 1] = node
+    end
+    if #root.children > 0 then
+        parent.body_headings = root.children
+    end
+end
+
+local function build_chapter_tree(chapters, filename_for, body_for)
+    local root = { children = {} }
+    local stack = { root }
+    local chapter_nodes = {}
     for chapter_index, chapter in ipairs(chapters or {}) do
         local level = chapter_level(chapter)
-        if level > #stack then
-            level = #stack
-        end
-        while #stack > level do
-            table.remove(stack)
-        end
-        local parent = stack[#stack] or root
+        if level > #stack then level = #stack end
+        while #stack > level do table.remove(stack) end
         local node = {
             title = chapter.title or ("Chapter " .. tostring(chapter.chapterUid or chapter_index)),
             href = filename_for(chapter_index, chapter),
             children = {},
         }
-        table.insert(parent.children, node)
+        table.insert(stack[#stack].children, node)
         stack[level + 1] = node
+        chapter_nodes[chapter_index] = node
+    end
+    if body_for then
+        for chapter_index, node in ipairs(chapter_nodes) do
+            local body = body_for(chapter_index, chapters[chapter_index])
+            local headings = extract_toc_headings(body or "")
+            if #headings > 0 then
+                append_heading_tree(node, headings, node.href)
+            end
+        end
     end
     return root.children
 end
 
-local function build_nav_items(chapters, filename_for)
-    local tree = build_chapter_tree(chapters, filename_for)
-    local function render(nodes)
-        local out = {}
-        for node_index, node in ipairs(nodes or {}) do
-            table.insert(out, [[<li><a href="]] .. xml_escape(node.href) .. [[">]] .. xml_escape(node.title) .. [[</a>]])
-            if node.children and #node.children > 0 then
-                table.insert(out, "<ol>")
-                table.insert(out, render(node.children))
-                table.insert(out, "</ol>")
-            end
-            table.insert(out, "</li>")
+local function render_nav_items(nodes)
+    local out = {}
+    for _i, node in ipairs(nodes or {}) do
+        if node.href then
+            out[#out + 1] = [[<li><a href="]] .. xml_escape(node.href) .. [[">]]
+                .. xml_escape(node.title) .. [[</a>]]
+        else
+            out[#out + 1] = "<li><span>" .. xml_escape(node.title) .. "</span>"
         end
-        return table.concat(out, "\n")
+        if (node.children and #node.children > 0)
+            or (node.body_headings and #node.body_headings > 0) then
+            out[#out + 1] = "<ol>"
+            out[#out + 1] = render_nav_items(node.children)
+            out[#out + 1] = render_nav_items(node.body_headings)
+            out[#out + 1] = "</ol>"
+        end
+        out[#out + 1] = "</li>"
     end
-
-    return render(tree)
+    return table.concat(out, "\n")
 end
 
-local function build_ncx_points(chapters, filename_for)
-    local tree = build_chapter_tree(chapters, filename_for)
-    local play_order = 0
-    local function render(nodes)
+local function build_ncx_points(tree)
+    local play_order, max_depth = 0, 0
+    local function render(nodes, depth)
         local out = {}
-        for node_index, node in ipairs(nodes or {}) do
-            play_order = play_order + 1
-            local current_order = play_order
-            table.insert(out, [[<navPoint id="navPoint-]] .. tostring(current_order) .. [[" playOrder="]] .. tostring(current_order) .. [[">]])
-            table.insert(out, [[<navLabel><text>]] .. xml_escape(node.title) .. [[</text></navLabel>]])
-            table.insert(out, [[<content src="]] .. xml_escape(node.href) .. [["/>]])
-            if node.children and #node.children > 0 then
-                table.insert(out, render(node.children))
+        for _i, node in ipairs(nodes or {}) do
+            if node.href then
+                play_order = play_order + 1
+                local current_order = play_order
+                local child_depth = depth + 1
+                max_depth = math.max(max_depth, child_depth)
+                out[#out + 1] = [[<navPoint id="navPoint-]] .. tostring(current_order)
+                    .. [[" playOrder="]] .. tostring(current_order) .. [[">]]
+                out[#out + 1] = [[<navLabel><text>]] .. xml_escape(node.title)
+                    .. [[</text></navLabel>]]
+                out[#out + 1] = [[<content src="]] .. xml_escape(node.href) .. [["/>]]
+                out[#out + 1] = render(node.children, child_depth)
+                out[#out + 1] = render(node.body_headings, child_depth)
+                out[#out + 1] = "</navPoint>"
+            else
+                out[#out + 1] = render(node.children, depth)
+                out[#out + 1] = render(node.body_headings, depth)
             end
-            table.insert(out, "</navPoint>")
         end
         return table.concat(out, "\n")
     end
-    return render(tree), play_order
+    return render(tree, 0), max_depth
 end
 
 local function metadata_text(value)
@@ -1339,14 +1514,30 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 ]] .. table.concat(spine_items, "\n") .. [[
 </spine>
 </package>]]
-    local ncx_points = build_ncx_points(chapters, function(chapter_index)
+    local function chapter_href(chapter_index)
         return string.format("text/chapter-%03d.xhtml", chapter_index)
-    end)
+    end
+    local function chapter_body_for_toc(chapter_index, chapter)
+        local uid = tostring(chapter.chapterUid or chapter.chapterId or chapter_index)
+        local body = chapter_bodies[uid]
+        if type(body) == "string" then return body end
+        if workspace_text_dir then
+            local file = io.open(workspace_text_dir .. "/"
+                .. string.format("chapter-%03d.xhtml", chapter_index), "rb")
+            if file then
+                body = file:read("*a")
+                file:close()
+                return body
+            end
+        end
+    end
+    local navigation = build_chapter_tree(chapters, chapter_href, chapter_body_for_toc)
+    local ncx_points, ncx_depth = build_ncx_points(navigation)
     local ncx = [[<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
 <head>
 <meta name="dtb:uid" content="weread-]] .. xml_escape(book_id) .. [[-]] .. xml_escape(suffix or "book") .. [["/>
-<meta name="dtb:depth" content="6"/>
+<meta name="dtb:depth" content="]] .. tostring(math.max(1, ncx_depth)) .. [["/>
 <meta name="dtb:totalPageCount" content="0"/>
 <meta name="dtb:maxPageNumber" content="0"/>
 </head>
@@ -1361,9 +1552,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 <body>
 <nav epub:type="toc" xmlns:epub="http://www.idpf.org/2007/ops">
 <ol>
-]] .. build_nav_items(chapters, function(chapter_index)
-        return string.format("text/chapter-%03d.xhtml", chapter_index)
-    end) .. [[
+]] .. render_nav_items(navigation) .. [[
 </ol>
 </nav>
 </body>
